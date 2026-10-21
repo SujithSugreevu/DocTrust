@@ -184,7 +184,7 @@ export async function getCurrentUser() {
     }
 
     return await response.json()
-  } catch (error) {
+  } catch {
     return null
   }
 }

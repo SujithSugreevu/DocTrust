@@ -127,15 +127,23 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_ROOT = os.environ.get("MEDIA_ROOT", str(BASE_DIR / "media"))
 MEDIA_URL = "/media/"  # Not actually served publicly
 
-# Upload limits
-MAX_UPLOAD_SIZE_MB = 50
-MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+# ── Private Document Storage (DocTrust Encapsulated Storage) ──────────
+# Storage root is completely separate from source tree, STATIC_ROOT, and MEDIA_ROOT.
+DOCUMENT_STORAGE_ROOT = os.environ.get(
+    "DOCUMENT_STORAGE_ROOT",
+    str(BASE_DIR.parent / "storage" if os.name == "nt" else "/var/doctrust/storage"),
+)
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "50"))
+MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+USER_STORAGE_QUOTA_MB = int(os.environ.get("USER_STORAGE_QUOTA_MB", "500"))
+USER_STORAGE_QUOTA_BYTES = USER_STORAGE_QUOTA_MB * 1024 * 1024
+DELETED_RETENTION_DAYS = int(os.environ.get("DELETED_RETENTION_DAYS", "30"))
+FILE_UPLOAD_PERMISSIONS = 0o600
+FILE_UPLOAD_TEMP_DIR = os.path.join(DOCUMENT_STORAGE_ROOT, "tmp")
+os.makedirs(FILE_UPLOAD_TEMP_DIR, mode=0o700, exist_ok=True)
 
 ALLOWED_UPLOAD_EXTENSIONS = {
     ".pdf", ".docx", ".xlsx", ".pptx",
-    ".doc", ".xls", ".ppt",
-    ".txt", ".csv", ".json",
-    ".png", ".jpg", ".jpeg", ".gif", ".svg",
 }
 
 # ── Django REST Framework ────────────────────────────────────────────

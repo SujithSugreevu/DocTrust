@@ -1,0 +1,210 @@
+/**
+ * DocTrust Documents Service
+ * Handles all document and folder API calls against the Django backend.
+ * Uses session-based auth with CSRF tokens.
+ */
+
+import { getCsrfToken } from './auth.js'
+
+const BASE = '/api/documents'
+
+/**
+ * Low-level fetch helper for JSON endpoints.
+ * Throws an Error with a user-readable message on non-2xx responses.
+ */
+async function apiFetch(url, options = {}) {
+  const csrfToken = await getCsrfToken()
+  const response = await fetch(url, {
+    credentials: 'include',
+    headers: {
+      'X-CSRFToken': csrfToken,
+      ...options.headers,
+    },
+    ...options,
+  })
+
+  if (response.status === 204) return null
+
+  const data = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
+    const message =
+      data.detail ||
+      (data.errors && Object.values(data.errors).flat().join(' ')) ||
+      Object.values(data).flat().join(' ') ||
+      `Request failed (${response.status})`
+    throw new Error(message)
+  }
+
+  return data
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Folder API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * List all folders owned by the current user.
+ * Returns array of { id, name, created_at, document_count }
+ */
+export async function listFolders() {
+  return apiFetch(`${BASE}/folders/`)
+}
+
+/**
+ * Create a new folder.
+ * @param {string} name
+ */
+export async function createFolder(name) {
+  return apiFetch(`${BASE}/folders/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
+/**
+ * Rename a folder.
+ * @param {string} id   UUID of the folder
+ * @param {string} name New name
+ */
+export async function renameFolder(id, name) {
+  return apiFetch(`${BASE}/folders/${id}/`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
+/**
+ * Delete an empty folder.
+ * @param {string} id UUID of the folder
+ */
+export async function deleteFolder(id) {
+  return apiFetch(`${BASE}/folders/${id}/`, { method: 'DELETE' })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Document API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * List documents with optional filters.
+ * @param {object} params  Query params: status, search, folder, file_type, ordering, page, page_size
+ * Returns { count, page, page_size, results: [...] }
+ */
+export async function listDocuments(params = {}) {
+  const qs = new URLSearchParams()
+  if (params.status) qs.set('status', params.status)
+  if (params.search) qs.set('search', params.search)
+  if (params.folder !== undefined) qs.set('folder', params.folder)
+  if (params.file_type) qs.set('file_type', params.file_type)
+  if (params.ordering) qs.set('ordering', params.ordering)
+  if (params.page) qs.set('page', String(params.page))
+  if (params.page_size) qs.set('page_size', String(params.page_size))
+  const query = qs.toString() ? `?${qs}` : ''
+  return apiFetch(`${BASE}/${query}`)
+}
+
+/**
+ * Upload a document. Sends multipart/form-data.
+ * @param {File}   file         The File object
+ * @param {object} meta         { name?, description?, folder? (UUID string or null) }
+ * @param {function} onProgress Optional callback (not supported by fetch; reserved)
+ */
+export async function uploadDocument(file, meta = {}) {
+  const csrfToken = await getCsrfToken()
+  const body = new FormData()
+  body.append('file', file)
+  if (meta.name) body.append('name', meta.name)
+  if (meta.description) body.append('description', meta.description)
+  if (meta.folder) body.append('folder', meta.folder)
+
+  const response = await fetch(`${BASE}/`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'X-CSRFToken': csrfToken },
+    body,
+  })
+
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const message =
+      data.detail ||
+      (data.errors && Object.values(data.errors).flat().join(' ')) ||
+      Object.values(data).flat().join(' ') ||
+      `Upload failed (${response.status})`
+    throw new Error(message)
+  }
+  return data
+}
+
+/**
+ * Get full metadata for a single document.
+ * @param {string} id UUID
+ */
+export async function getDocument(id) {
+  return apiFetch(`${BASE}/${id}/`)
+}
+
+/**
+ * Update document name, description, or folder.
+ * @param {string} id   UUID
+ * @param {object} data { name?, description?, folder? (UUID or null) }
+ */
+export async function updateDocument(id, data) {
+  return apiFetch(`${BASE}/${id}/`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Trigger a browser download for a document.
+ * Navigates to the download URL directly so the browser handles the stream.
+ * @param {object} doc  Document object with id and name
+ */
+export function downloadDocument(doc) {
+  // We use a temporary anchor to trigger the download.
+  // The session cookie is sent automatically.
+  const anchor = window.document.createElement('a')
+  anchor.href = `${BASE}/${doc.id}/download/`
+  anchor.download = doc.name
+  anchor.style.display = 'none'
+  window.document.body.appendChild(anchor)
+  anchor.click()
+  window.document.body.removeChild(anchor)
+}
+
+/**
+ * Soft-delete a document.
+ * @param {string} id UUID
+ */
+export async function deleteDocument(id) {
+  return apiFetch(`${BASE}/${id}/delete/`, { method: 'DELETE' })
+}
+
+/**
+ * Archive an active document.
+ * @param {string} id UUID
+ */
+export async function archiveDocument(id) {
+  return apiFetch(`${BASE}/${id}/archive/`, { method: 'POST' })
+}
+
+/**
+ * Restore an archived document to active.
+ * @param {string} id UUID
+ */
+export async function restoreDocument(id) {
+  return apiFetch(`${BASE}/${id}/restore/`, { method: 'POST' })
+}
+
+/**
+ * Permanently purge the file bytes of a soft-deleted document.
+ * @param {string} id UUID
+ */
+export async function purgeDocument(id) {
+  return apiFetch(`${BASE}/${id}/purge/`, { method: 'POST' })
+}

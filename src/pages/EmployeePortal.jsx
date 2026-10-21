@@ -1,11 +1,24 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, Bell, Check, Clock3, Database, Download, Eye, FileText, Filter,
   Folder, History, LockKeyhole, LogOut, Pencil, Plus, Search, Settings2,
   Share2, ShieldCheck, SlidersHorizontal, Trash2, Upload, UserRound, X,
 } from 'lucide-react'
-import { logout } from '../services/auth.js'
+import { logout, getCurrentUser } from '../services/auth.js'
+import {
+  listFolders,
+  createFolder,
+  renameFolder,
+  deleteFolder,
+  listDocuments,
+  uploadDocument,
+  updateDocument,
+  downloadDocument as downloadDocService,
+  deleteDocument as deleteDocService,
+  archiveDocument as archiveDocService,
+  restoreDocument as restoreDocService,
+} from '../services/documents.js'
 
 const initialDocuments = [
   { id: 1, name: 'Project_Report.pdf', category: 'Reports', type: 'PDF', size: '2.4 MB', modified: '20 Oct 2026', owner: 'John Doe', folder: 'Reports', description: 'Quarterly project report and status.' },
@@ -138,6 +151,7 @@ export default function EmployeePortal() {
   const fileInput = useRef(null)
   const page = location.pathname.split('/')[2] || 'dashboard'
   const [documents, setDocuments] = useState(initialDocuments)
+  const [backendFolders, setBackendFolders] = useState([])
   const [shares, setShares] = useState(initialShares)
   const [activity, setActivity] = useState(initialActivity)
   const [folders, setFolders] = useState(['Reports', 'Finance', 'HR', 'Projects', 'Design', 'Documents'])
@@ -165,9 +179,57 @@ export default function EmployeePortal() {
   const [activityFilters, setActivityFilters] = useState({ query: '', action: 'All actions', document: 'All documents', date: '' })
   const [sharedFilters, setSharedFilters] = useState({ query: '', recipient: 'All recipients', permission: 'All' })
 
+  async function loadData() {
+    try {
+      const user = await getCurrentUser()
+      if (user) {
+        const displayName = user.username || user.email || 'Employee'
+        setProfile({ name: displayName, email: user.email || '' })
+        setProfileDraft({ name: displayName, email: user.email || '' })
+      }
+
+      const fetchedFolders = await listFolders()
+      if (Array.isArray(fetchedFolders)) {
+        setBackendFolders(fetchedFolders)
+        if (fetchedFolders.length > 0) {
+          setFolders(fetchedFolders.map((f) => f.name))
+        }
+      }
+
+      const docsResp = await listDocuments({ status: 'all', page_size: 100 })
+      if (docsResp && Array.isArray(docsResp.results) && docsResp.results.length > 0) {
+        const userName = user?.username || profile.name
+        const mapped = docsResp.results.map((d) => ({
+          id: d.id,
+          name: d.name,
+          category: d.folder_name || 'Documents',
+          folder: d.folder_name || 'Documents',
+          folderId: d.folder,
+          type: d.file_type,
+          size: d.size_display || formatFileSize(d.size),
+          modified: d.created_at
+            ? new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(d.created_at))
+            : formatDate(),
+          owner: userName,
+          description: d.description || '',
+          status: d.status,
+          rawDoc: d,
+        }))
+        setDocuments(mapped)
+      }
+    } catch (err) {
+      console.warn('Backend data load error (session fallback active):', err)
+    }
+  }
+
+  useEffect(() => {
+    loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const title = pageTitles[page] || pageTitles.dashboard
-  const ownedDocuments = documents.filter((document) => document.owner === profile.name)
-  const currentDocument = documents.find((document) => document.id === Number(selectedDocumentId)) || ownedDocuments[0]
+  const ownedDocuments = documents.filter((document) => !document.owner || document.owner === profile.name || document.rawDoc)
+  const currentDocument = documents.find((document) => String(document.id) === String(selectedDocumentId)) || ownedDocuments[0]
   const unreadCount = notifications.filter((item) => !item.read).length
 
   function record(action, document, details = action, user = profile.name) {
@@ -186,15 +248,25 @@ export default function EmployeePortal() {
   }
 
   function downloadDocument(document) {
-    const blob = new Blob([`${document.name}\n\n${document.description || 'DocTrust sample document.'}`], { type: 'text/plain' })
-    const href = URL.createObjectURL(blob)
-    const anchor = window.document.createElement('a')
-    anchor.href = href
-    anchor.download = document.name
-    anchor.click()
-    URL.revokeObjectURL(href)
-    record('Downloaded', document, 'Downloaded file')
-    setNotice(`${document.name} downloaded.`)
+    try {
+      if (document.rawDoc) {
+        downloadDocService(document.rawDoc)
+        record('Downloaded', document, 'Downloaded file')
+        setNotice(`${document.name} download initiated.`)
+      } else {
+        const blob = new Blob([`${document.name}\n\n${document.description || 'DocTrust sample document.'}`], { type: 'text/plain' })
+        const href = URL.createObjectURL(blob)
+        const anchor = window.document.createElement('a')
+        anchor.href = href
+        anchor.download = document.name
+        anchor.click()
+        URL.revokeObjectURL(href)
+        record('Downloaded', document, 'Downloaded file')
+        setNotice(`${document.name} downloaded.`)
+      }
+    } catch (err) {
+      setNotice(err.message || 'Download failed.')
+    }
   }
 
   function selectUploadFile(file) {
@@ -215,7 +287,7 @@ export default function EmployeePortal() {
     setNotice('')
   }
 
-  function submitUpload(event) {
+  async function submitUpload(event) {
     event.preventDefault()
     if (!selectedFile) {
       setNotice('Select a file before uploading.')
@@ -225,28 +297,59 @@ export default function EmployeePortal() {
       setNotice('Enter a document name.')
       return
     }
-    const id = Math.max(0, ...documents.map((document) => document.id)) + 1
-    const extension = selectedFile.name.split('.').pop().toLowerCase()
-    const documentName = upload.name.trim().toLowerCase().endsWith(`.${extension}`)
-      ? upload.name.trim()
-      : `${upload.name.trim()}.${extension}`
-    const document = { id, name: documentName, category: upload.category, type: extension.toUpperCase(), size: formatFileSize(selectedFile.size), modified: formatDate(), owner: profile.name, folder: upload.category, description: upload.description }
-    setDocuments((current) => [document, ...current])
-    setFolders((current) => current.includes(upload.category) ? current : [...current, upload.category])
-    record('Uploaded', document, `File uploaded (${document.size})`)
-    setSelectedFile(null)
-    setUpload({ name: '', category: 'Reports', description: '' })
-    if (fileInput.current) fileInput.current.value = ''
-    setNotice(`${document.name} uploaded successfully.`)
+
+    try {
+      setNotice('Uploading document...')
+      const targetFolder = backendFolders.find((f) => f.name.toLowerCase() === upload.category.toLowerCase())
+      const folderId = targetFolder ? targetFolder.id : null
+
+      const created = await uploadDocument(selectedFile, {
+        name: upload.name.trim(),
+        description: upload.description.trim(),
+        folder: folderId,
+      })
+
+      await loadData()
+      setSelectedFile(null)
+      setUpload({ name: '', category: 'Reports', description: '' })
+      if (fileInput.current) fileInput.current.value = ''
+      record('Uploaded', { id: created.id, name: created.name }, `File uploaded (${created.size_display || formatFileSize(selectedFile.size)})`)
+      setNotice(`${created.name} uploaded successfully.`)
+    } catch (err) {
+      setNotice(err.message || 'Upload failed.')
+    }
   }
 
-  function saveModal(event) {
+  async function saveModal(event) {
     event.preventDefault()
     if (modal.type === 'delete-document') {
-      setDocuments((current) => current.filter((document) => document.id !== modal.document.id))
-      setShares((current) => current.filter((share) => share.documentId !== modal.document.id))
-      record('Deleted', modal.document, 'Document deleted and access removed')
-      setNotice(`${modal.document.name} deleted.`)
+      try {
+        if (modal.document.rawDoc?.id) {
+          await deleteDocService(modal.document.rawDoc.id)
+          await loadData()
+        } else {
+          setDocuments((current) => current.filter((document) => document.id !== modal.document.id))
+          setShares((current) => current.filter((share) => share.documentId !== modal.document.id))
+        }
+        record('Deleted', modal.document, 'Document deleted and access removed')
+        setNotice(`${modal.document.name} deleted.`)
+      } catch (err) {
+        setNotice(err.message || 'Failed to delete document.')
+      }
+    } else if (modal.type === 'delete-folder') {
+      try {
+        const folderObj = backendFolders.find((f) => f.name === modal.folder)
+        if (folderObj) {
+          await deleteFolder(folderObj.id)
+          await loadData()
+          setNotice(`Folder "${modal.folder}" deleted.`)
+        } else {
+          setFolders((current) => current.filter((f) => f !== modal.folder))
+          setNotice(`Folder "${modal.folder}" removed.`)
+        }
+      } catch (err) {
+        setNotice(err.message || 'Cannot delete folder.')
+      }
     } else if (modal.type === 'revoke-access') {
       const share = modal.share
       setShares((current) => current.map((item) => item.id === share.id ? { ...item, status: 'Revoked' } : item))
@@ -255,58 +358,108 @@ export default function EmployeePortal() {
     } else {
       const form = new FormData(event.currentTarget)
       if (modal.type === 'rename-document') {
-      const name = String(form.get('name') || '').trim()
-      if (!name) return
-      setDocuments((current) => current.map((document) => document.id === modal.document.id ? { ...document, name } : document))
-      record('Renamed', modal.document, `Renamed to ${name}`)
-      setNotice('Document renamed.')
+        const name = String(form.get('name') || '').trim()
+        if (!name) return
+        try {
+          if (modal.document.rawDoc?.id) {
+            await updateDocument(modal.document.rawDoc.id, { name })
+            await loadData()
+          } else {
+            setDocuments((current) => current.map((document) => document.id === modal.document.id ? { ...document, name } : document))
+          }
+          record('Renamed', modal.document, `Renamed to ${name}`)
+          setNotice('Document renamed.')
+        } catch (err) {
+          setNotice(err.message || 'Failed to rename document.')
+        }
       } else if (modal.type === 'edit-document') {
-      const name = String(form.get('name') || '').trim()
-      const description = String(form.get('description') || '')
-      const category = String(form.get('category') || modal.document.category)
-      setDocuments((current) => current.map((document) => document.id === modal.document.id ? { ...document, name, description, category } : document))
-      record('Edited', modal.document, 'Updated document details')
-      setNotice('Document details updated.')
+        const name = String(form.get('name') || '').trim()
+        const description = String(form.get('description') || '')
+        const category = String(form.get('category') || modal.document.category)
+        const targetFolder = backendFolders.find((f) => f.name.toLowerCase() === category.toLowerCase())
+        try {
+          if (modal.document.rawDoc?.id) {
+            await updateDocument(modal.document.rawDoc.id, {
+              name,
+              description,
+              folder: targetFolder ? targetFolder.id : null,
+            })
+            await loadData()
+          } else {
+            setDocuments((current) => current.map((document) => document.id === modal.document.id ? { ...document, name, description, category } : document))
+          }
+          record('Edited', modal.document, 'Updated document details')
+          setNotice('Document details updated.')
+        } catch (err) {
+          setNotice(err.message || 'Failed to update document.')
+        }
       } else if (modal.type === 'create-folder' || modal.type === 'rename-folder') {
-      const name = String(form.get('name') || '').trim()
-      if (!name) return
-      if (modal.type === 'create-folder') {
-        if (folders.some((folder) => folder.toLowerCase() === name.toLowerCase())) {
-          setNotice('A folder with that name already exists.')
+        const name = String(form.get('name') || '').trim()
+        if (!name) return
+        if (modal.type === 'create-folder') {
+          if (folders.some((folder) => folder.toLowerCase() === name.toLowerCase())) {
+            setNotice('A folder with that name already exists.')
+            return
+          }
+          try {
+            await createFolder(name)
+            await loadData()
+            setNotice(`Folder "${name}" created.`)
+          } catch (err) {
+            setNotice(err.message || 'Failed to create folder.')
+          }
+        } else {
+          try {
+            const folderObj = backendFolders.find((f) => f.name === modal.folder)
+            if (folderObj) {
+              await renameFolder(folderObj.id, name)
+              await loadData()
+            } else {
+              setFolders((current) => current.map((folder) => folder === modal.folder ? name : folder))
+              setDocuments((current) => current.map((document) => document.folder === modal.folder ? { ...document, folder: name } : document))
+            }
+            setNotice(`Folder renamed to "${name}".`)
+          } catch (err) {
+            setNotice(err.message || 'Failed to rename folder.')
+          }
+        }
+      } else if (modal.type === 'grant-access') {
+        const email = String(form.get('email') || '').trim().toLowerCase()
+        const recipient = String(form.get('recipient') || '').trim()
+        const duplicate = shares.some((share) => share.documentId === currentDocument.id && share.email.toLowerCase() === email && share.status === 'Active')
+        if (duplicate) {
+          setNotice('This person already has active access to this document.')
           return
         }
-        setFolders((current) => [...current, name])
-        setNotice(`Folder "${name}" created.`)
-      } else {
-        setFolders((current) => current.map((folder) => folder === modal.folder ? name : folder))
-        setDocuments((current) => current.map((document) => document.folder === modal.folder ? { ...document, folder: name } : document))
-        setNotice(`Folder renamed to "${name}".`)
-      }
-      } else if (modal.type === 'grant-access') {
-      const email = String(form.get('email') || '').trim().toLowerCase()
-      const recipient = String(form.get('recipient') || '').trim()
-      const duplicate = shares.some((share) => share.documentId === currentDocument.id && share.email.toLowerCase() === email && share.status === 'Active')
-      if (duplicate) {
-        setNotice('This person already has active access to this document.')
-        return
-      }
-      const share = { id: Date.now(), documentId: currentDocument.id, recipient, email, permission: String(form.get('permission')), date: formatDate(), status: 'Active', expiry: String(form.get('expiry') || '') }
-      setShares((current) => [share, ...current])
-      record('Permission changed', currentDocument, `${share.permission} access granted to ${recipient}`)
-      setNotifications((current) => [{ id: Date.now(), message: `You granted ${share.permission} access to ${email} on ${currentDocument.name}`, read: false }, ...current])
-      setNotice(`Access granted to ${recipient}.`)
+        const share = { id: Date.now(), documentId: currentDocument.id, recipient, email, permission: String(form.get('permission')), date: formatDate(), status: 'Active', expiry: String(form.get('expiry') || '') }
+        setShares((current) => [share, ...current])
+        record('Permission changed', currentDocument, `${share.permission} access granted to ${recipient}`)
+        setNotifications((current) => [{ id: Date.now(), message: `You granted ${share.permission} access to ${email} on ${currentDocument.name}`, read: false }, ...current])
+        setNotice(`Access granted to ${recipient}.`)
       }
     }
     setModal(null)
   }
 
-  function moveDocument(event) {
+  async function moveDocument(event) {
     event.preventDefault()
     const destination = new FormData(event.currentTarget).get('folder')
     if (!destination || !currentDocument) return
-    setDocuments((current) => current.map((document) => document.id === currentDocument.id ? { ...document, folder: String(destination) } : document))
-    record('Moved', currentDocument, `Moved to folder ${String(destination)}`)
-    setNotice(`${currentDocument.name} moved to ${String(destination)}.`)
+    const targetFolder = backendFolders.find((f) => f.name.toLowerCase() === String(destination).toLowerCase())
+    try {
+      if (currentDocument.rawDoc?.id) {
+        await updateDocument(currentDocument.rawDoc.id, {
+          folder: targetFolder ? targetFolder.id : null,
+        })
+        await loadData()
+      } else {
+        setDocuments((current) => current.map((document) => document.id === currentDocument.id ? { ...document, folder: String(destination) } : document))
+      }
+      record('Moved', currentDocument, `Moved to folder ${String(destination)}`)
+      setNotice(`${currentDocument.name} moved to ${String(destination)}.`)
+    } catch (err) {
+      setNotice(err.message || 'Failed to move document.')
+    }
   }
 
   function saveProfile(event) {
@@ -380,7 +533,36 @@ export default function EmployeePortal() {
             <td className="px-2 py-2.5"><div className="flex items-center gap-2"><span className="rounded-lg bg-rose-50 p-2 text-rose-700"><FileText size={15} /></span><span className="font-semibold">{document.name}</span></div></td>
             <td className="px-2 py-2.5">{document.category}</td><td className="px-2 py-2.5">{document.type}</td><td className="px-2 py-2.5">{document.size}</td><td className="whitespace-nowrap px-2 py-2.5">{document.modified}</td>
             <td className="relative px-2 py-2.5"><div className="flex gap-1.5"><ActionButton onClick={() => openPreview(document)}><Eye size={13} /> Preview</ActionButton><ActionButton onClick={() => downloadDocument(document)}><Download size={13} /> Download</ActionButton><ActionButton aria-expanded={moreActions === document.id} onClick={() => setMoreActions(moreActions === document.id ? null : document.id)}><SlidersHorizontal size={13} /> More Actions</ActionButton></div>
-              {moreActions === document.id && <div className="absolute right-2 top-12 z-20 grid w-44 gap-1 rounded-xl border border-slate-200 bg-white p-2 shadow-lg"><button onClick={() => { setModal({ type: 'edit-document', document }); setMoreActions(null) }} className="rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><Pencil size={13} className="mr-2 inline" />Edit Details</button><button onClick={() => { setModal({ type: 'rename-document', document }); setMoreActions(null) }} className="rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><Pencil size={13} className="mr-2 inline" />Rename</button><button onClick={() => { setModal({ type: 'delete-document', document }); setMoreActions(null) }} className="rounded-lg px-3 py-2 text-left text-xs text-rose-700 hover:bg-rose-50"><Trash2 size={13} className="mr-2 inline" />Delete Document</button></div>}
+              {moreActions === document.id && <div className="absolute right-2 top-12 z-20 grid w-44 gap-1 rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
+                <button onClick={() => { setModal({ type: 'edit-document', document }); setMoreActions(null) }} className="rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><Pencil size={13} className="mr-2 inline" />Edit Details</button>
+                <button onClick={() => { setModal({ type: 'rename-document', document }); setMoreActions(null) }} className="rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><Pencil size={13} className="mr-2 inline" />Rename</button>
+                {document.status === 'archived' ? (
+                  <button onClick={async () => {
+                    try {
+                      if (document.rawDoc?.id) await restoreDocService(document.rawDoc.id)
+                      await loadData()
+                      record('Restored', document, 'Restored document to active')
+                      setNotice(`${document.name} restored.`)
+                    } catch (e) {
+                      setNotice(e.message)
+                    }
+                    setMoreActions(null)
+                  }} className="rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><History size={13} className="mr-2 inline" />Restore</button>
+                ) : (
+                  <button onClick={async () => {
+                    try {
+                      if (document.rawDoc?.id) await archiveDocService(document.rawDoc.id)
+                      await loadData()
+                      record('Archived', document, 'Archived document')
+                      setNotice(`${document.name} archived.`)
+                    } catch (e) {
+                      setNotice(e.message)
+                    }
+                    setMoreActions(null)
+                  }} className="rounded-lg px-3 py-2 text-left text-xs hover:bg-emerald-50"><Database size={13} className="mr-2 inline" />Archive</button>
+                )}
+                <button onClick={() => { setModal({ type: 'delete-document', document }); setMoreActions(null) }} className="rounded-lg px-3 py-2 text-left text-xs text-rose-700 hover:bg-rose-50"><Trash2 size={13} className="mr-2 inline" />Delete Document</button>
+              </div>}
             </td>
           </tr>)}
           {pageDocuments.length === 0 && <tr><td colSpan="6" className="px-4 py-10 text-center text-slate-500">No documents match these filters.</td></tr>}</tbody>
@@ -413,9 +595,9 @@ export default function EmployeePortal() {
     return <div className="space-y-4">
       <Panel><div className="grid items-end gap-3 sm:grid-cols-[1fr_auto_auto]"><Field label="Search Folders"><span className="relative block"><Search size={15} className="absolute left-3 top-3 text-slate-400" /><TextInput className="pl-9" placeholder="Search folders or documents" value={query} onChange={(event) => setQuery(event.target.value)} /></span></Field><ActionButton onClick={() => setNotice('Folder filters applied.') }><Filter size={14} /> Apply Filters</ActionButton><ActionButton variant="primary" onClick={() => setModal({ type: 'create-folder' })}><Plus size={14} /> Create Folder</ActionButton></div></Panel>
       {notice && <p role="status" className="rounded-lg bg-emerald-50 p-2.5 text-xs text-emerald-900">{notice}</p>}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{folders.filter((folder) => `${folder} ${owned.filter((document) => document.folder === folder).map((document) => document.name).join(' ')}`.toLowerCase().includes(query.toLowerCase())).map((folder) => <Panel key={folder}><span className="mb-3 inline-flex rounded-xl bg-teal-100 p-2.5 text-teal-800"><Folder size={19} /></span><h2 className="font-semibold">{folder}</h2><p className="mt-1 text-xs text-slate-500">{owned.filter((document) => document.folder === folder).length} documents</p><div className="mt-3 flex gap-1.5"><ActionButton variant="primary" onClick={() => navigate(`/employee/folders?folder=${encodeURIComponent(folder)}`)}><Folder size={13} /> Open Folder</ActionButton><ActionButton onClick={() => setModal({ type: 'rename-folder', folder })}><Pencil size={13} /> Rename</ActionButton></div></Panel>)}</div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{folders.filter((folder) => `${folder} ${owned.filter((document) => document.folder === folder).map((document) => document.name).join(' ')}`.toLowerCase().includes(query.toLowerCase())).map((folder) => <Panel key={folder}><span className="mb-3 inline-flex rounded-xl bg-teal-100 p-2.5 text-teal-800"><Folder size={19} /></span><h2 className="font-semibold">{folder}</h2><p className="mt-1 text-xs text-slate-500">{owned.filter((document) => document.folder === folder).length} documents</p><div className="mt-3 flex flex-wrap gap-1.5"><ActionButton variant="primary" onClick={() => navigate(`/employee/folders?folder=${encodeURIComponent(folder)}`)}><Folder size={13} /> Open Folder</ActionButton><ActionButton onClick={() => setModal({ type: 'rename-folder', folder })}><Pencil size={13} /> Rename</ActionButton><ActionButton variant="danger" onClick={() => setModal({ type: 'delete-folder', folder })}><Trash2 size={13} /> Delete</ActionButton></div></Panel>)}</div>
       {selectedFolder && <Panel><div className="mb-3 flex items-center justify-between"><h2 className="font-bold">{selectedFolder} documents</h2><ActionButton onClick={() => navigate('/employee/folders')}>Close folder</ActionButton></div><div className="space-y-2">{folderDocuments.length ? folderDocuments.map((document) => <div key={document.id} className="flex items-center justify-between gap-3 border-t border-slate-100 py-2 text-sm"><span>{document.name}</span><ActionButton onClick={() => openPreview(document)}><Eye size={13} /> Preview</ActionButton></div>) : <p className="text-sm text-slate-500">This folder is empty.</p>}</div></Panel>}
-      <Panel><h2 className="mb-3 flex items-center gap-2 font-bold"><Settings2 size={16} /> Move Document</h2><form onSubmit={moveDocument} className="grid items-end gap-3 md:grid-cols-[1fr_1fr_auto]"><Field label="Document"><SelectInput value={selectedDocumentId} onChange={(event) => setSelectedDocumentId(Number(event.target.value))}>{owned.map((document) => <option key={document.id} value={document.id}>{document.name}</option>)}</SelectInput></Field><Field label="Move to folder"><SelectInput name="folder" defaultValue={currentDocument?.folder}>{folders.map((folder) => <option key={folder}>{folder}</option>)}</SelectInput></Field><ActionButton variant="primary" type="submit"><SlidersHorizontal size={13} /> Move Document</ActionButton></form><p className="mt-3 text-[11px] text-slate-500">Moving a document to a folder never changes who can access it.</p></Panel>
+      <Panel><h2 className="mb-3 flex items-center gap-2 font-bold"><Settings2 size={16} /> Move Document</h2><form onSubmit={moveDocument} className="grid items-end gap-3 md:grid-cols-[1fr_1fr_auto]"><Field label="Document"><SelectInput value={selectedDocumentId} onChange={(event) => setSelectedDocumentId(event.target.value)}>{owned.map((document) => <option key={document.id} value={document.id}>{document.name}</option>)}</SelectInput></Field><Field label="Move to folder"><SelectInput name="folder" defaultValue={currentDocument?.folder}>{folders.map((folder) => <option key={folder}>{folder}</option>)}</SelectInput></Field><ActionButton variant="primary" type="submit"><SlidersHorizontal size={13} /> Move Document</ActionButton></form><p className="mt-3 text-[11px] text-slate-500">Moving a document to a folder never changes who can access it.</p></Panel>
     </div>
   }
 
@@ -445,7 +627,7 @@ export default function EmployeePortal() {
         <Panel><div className="mb-3 flex flex-wrap gap-2"><ActionButton variant="primary" onClick={() => setNotice('Showing current and revoked access records for this document.') }><UsersIcon /> Current Access</ActionButton><ActionButton onClick={() => navigate('/employee/activity')}><History size={13} /> View Permission History</ActionButton></div>
           <div className="overflow-x-auto"><table className="w-full min-w-[560px] text-left text-xs"><thead><tr className="border-b border-slate-200 text-slate-500">{['User', 'Email', 'Permission', 'Status', 'Actions'].map((heading) => <th key={heading} className="px-2 py-3">{heading}</th>)}</tr></thead><tbody>{documentShares.map((share) => <tr key={share.id} className="border-b border-slate-100"><td className="px-2 py-3 font-semibold">{share.recipient}</td><td className="px-2 py-3">{share.email}</td><td className="px-2 py-3"><Badge tone={share.permission === 'Edit' ? 'amber' : share.permission === 'Download' ? 'purple' : 'blue'}>{share.permission}</Badge></td><td className="px-2 py-3"><Badge tone={share.status === 'Active' ? 'green' : 'red'}>{share.status}</Badge></td><td className="px-2 py-3">{share.status === 'Active' ? <ActionButton variant="danger" onClick={() => setModal({ type: 'revoke-access', share })}><LockKeyhole size={13} /> Revoke Access</ActionButton> : <span className="text-slate-400">Revoked</span>}</td></tr>)}{documentShares.length === 0 && <tr><td colSpan="5" className="px-3 py-8 text-center text-slate-500">No access has been granted to this document.</td></tr>}</tbody></table></div>
         </Panel>
-        <div className="space-y-3"><Panel><h2 className="mb-3 flex items-center gap-2 font-bold"><Plus size={16} /> Grant Access</h2><form onSubmit={(event) => { event.preventDefault(); setModal({ type: 'grant-access' }); window.requestAnimationFrame(() => document.getElementById('grant-access-email')?.focus()) }} className="space-y-3"><Field label="Document"><SelectInput value={selectedDocumentId} onChange={(event) => setSelectedDocumentId(Number(event.target.value))}>{ownedDocuments.map((document) => <option key={document.id} value={document.id}>{document.name}</option>)}</SelectInput></Field><p className="text-xs text-slate-500">Choose a document and use the secure grant form to add a person.</p><ActionButton type="submit" variant="primary"><Plus size={13} /> Grant Access</ActionButton></form></Panel><Panel className="bg-teal-50"><h3 className="mb-2 text-sm font-bold">Permission Levels</h3><p className="text-xs text-slate-600"><Badge tone="blue">Read</Badge> View the document only.</p><p className="mt-2 text-xs text-slate-600"><Badge tone="purple">Download</Badge> View and download the document.</p><p className="mt-2 text-xs text-slate-600"><Badge tone="amber">Edit</Badge> View, download and modify. Cannot share, delete, or transfer ownership.</p></Panel></div>
+        <div className="space-y-3"><Panel><h2 className="mb-3 flex items-center gap-2 font-bold"><Plus size={16} /> Grant Access</h2><form onSubmit={(event) => { event.preventDefault(); setModal({ type: 'grant-access' }); window.requestAnimationFrame(() => document.getElementById('grant-access-email')?.focus()) }} className="space-y-3"><Field label="Document"><SelectInput value={selectedDocumentId} onChange={(event) => setSelectedDocumentId(event.target.value)}>{ownedDocuments.map((document) => <option key={document.id} value={document.id}>{document.name}</option>)}</SelectInput></Field><p className="text-xs text-slate-500">Choose a document and use the secure grant form to add a person.</p><ActionButton type="submit" variant="primary"><Plus size={13} /> Grant Access</ActionButton></form></Panel><Panel className="bg-teal-50"><h3 className="mb-2 text-sm font-bold">Permission Levels</h3><p className="text-xs text-slate-600"><Badge tone="blue">Read</Badge> View the document only.</p><p className="mt-2 text-xs text-slate-600"><Badge tone="purple">Download</Badge> View and download the document.</p><p className="mt-2 text-xs text-slate-600"><Badge tone="amber">Edit</Badge> View, download and modify. Cannot share, delete, or transfer ownership.</p></Panel></div>
       </div>{notice && <p role="status" className="rounded-lg bg-emerald-50 p-2.5 text-xs text-emerald-900">{notice}</p>}
     </div>
   }
@@ -486,10 +668,10 @@ export default function EmployeePortal() {
   function renderModal() {
     if (!modal || modal.type === 'logout') return null
     if (modal.type === 'preview') return <Modal title={modal.document.name} onClose={() => setModal(null)}><div className="rounded-xl bg-slate-50 p-6"><p className="text-sm text-slate-600">{modal.document.description || 'No description provided.'}</p><dl className="mt-4 grid grid-cols-2 gap-3 text-xs"><div><dt className="text-slate-500">Category</dt><dd className="mt-1 font-semibold">{modal.document.category}</dd></div><div><dt className="text-slate-500">Type / size</dt><dd className="mt-1 font-semibold">{modal.document.type} · {modal.document.size}</dd></div><div><dt className="text-slate-500">Owner</dt><dd className="mt-1 font-semibold">{modal.document.owner}</dd></div><div><dt className="text-slate-500">Modified</dt><dd className="mt-1 font-semibold">{modal.document.modified}</dd></div></dl></div><div className="mt-4 flex justify-end gap-2"><ActionButton onClick={() => setModal(null)}>Close</ActionButton><ActionButton variant="primary" onClick={() => downloadDocument(modal.document)}><Download size={13} /> Download</ActionButton></div></Modal>
-    const destructive = modal.type === 'delete-document' || modal.type === 'revoke-access'
-    const titleByType = { 'rename-document': 'Rename Document', 'edit-document': 'Edit Document Details', 'delete-document': 'Delete Document?', 'create-folder': 'Create Folder', 'rename-folder': 'Rename Folder', 'grant-access': 'Grant Access', 'revoke-access': `Revoke access for ${modal.share?.recipient || 'user'}?` }
+    const destructive = modal.type === 'delete-document' || modal.type === 'revoke-access' || modal.type === 'delete-folder'
+    const titleByType = { 'rename-document': 'Rename Document', 'edit-document': 'Edit Document Details', 'delete-document': 'Delete Document?', 'delete-folder': `Delete folder "${modal.folder}"?`, 'create-folder': 'Create Folder', 'rename-folder': 'Rename Folder', 'grant-access': 'Grant Access', 'revoke-access': `Revoke access for ${modal.share?.recipient || 'user'}?` }
     return <Modal title={titleByType[modal.type]} onClose={() => setModal(null)}>
-      {destructive ? <><p className="text-sm leading-relaxed text-slate-600">{modal.type === 'delete-document' ? `${modal.document.name} will be removed and everyone with access will lose it. This is recorded in the audit log.` : `${modal.share.recipient} will immediately lose access to ${currentDocument?.name}. This is recorded in the audit log.`}</p><div className="mt-5 flex justify-end gap-2"><ActionButton onClick={() => setModal(null)}>Cancel</ActionButton><ActionButton variant="danger" onClick={() => saveModal({ preventDefault() {}, currentTarget: { elements: [] } })}><Trash2 size={13} />{modal.type === 'delete-document' ? 'Delete Document' : 'Revoke Access'}</ActionButton></div></> :
+      {destructive ? <><p className="text-sm leading-relaxed text-slate-600">{modal.type === 'delete-document' ? `${modal.document.name} will be removed and everyone with access will lose it. This is recorded in the audit log.` : modal.type === 'delete-folder' ? `Folder "${modal.folder}" will be deleted. The folder must contain no documents.` : `${modal.share.recipient} will immediately lose access to ${currentDocument?.name}. This is recorded in the audit log.`}</p><div className="mt-5 flex justify-end gap-2"><ActionButton onClick={() => setModal(null)}>Cancel</ActionButton><ActionButton variant="danger" onClick={() => saveModal({ preventDefault() {}, currentTarget: { elements: [] } })}><Trash2 size={13} />{modal.type === 'delete-document' ? 'Delete Document' : modal.type === 'delete-folder' ? 'Delete Folder' : 'Revoke Access'}</ActionButton></div></> :
         <form onSubmit={saveModal} className="space-y-3">
           {modal.type === 'rename-document' && <Field label="Document name"><TextInput name="name" required defaultValue={modal.document.name} /></Field>}
           {modal.type === 'edit-document' && <><Field label="Document name"><TextInput name="name" required defaultValue={modal.document.name} /></Field><Field label="Category"><SelectInput name="category" defaultValue={modal.document.category}>{categories.map((category) => <option key={category}>{category}</option>)}</SelectInput></Field><Field label="Description"><textarea name="description" defaultValue={modal.document.description} className="w-full rounded-xl border border-slate-200 p-3 text-sm" rows="3" /></Field></>}
@@ -513,9 +695,10 @@ export default function EmployeePortal() {
     <div className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8"><header className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-bold tracking-tight">{title[0]}</h1><p className="mt-1 text-sm text-slate-500">{title[1]}</p></div><div className="flex items-center gap-2"><div className="relative"><button type="button" aria-expanded={notificationOpen} onClick={() => setNotificationOpen(!notificationOpen)} className="relative flex items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 py-2 text-xs font-semibold text-emerald-800"><Bell size={14} /> Notifications{unreadCount > 0 && <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-red-500 text-[10px] text-white">{unreadCount}</span>}</button>{notificationOpen && <div className="absolute right-0 z-30 mt-2 w-[min(90vw,330px)] rounded-xl border border-slate-100 bg-white p-3 shadow-xl"><div className="mb-2 flex items-center justify-between"><strong className="text-sm">Notifications</strong><button type="button" onClick={() => setNotifications((current) => current.map((item) => ({ ...item, read: true })))} className="text-xs font-semibold text-emerald-800">Mark all read</button></div>{notifications.map((item) => <button key={item.id} type="button" onClick={() => { setNotifications((current) => current.map((notification) => notification.id === item.id ? { ...notification, read: true } : notification)); setNotificationOpen(false); navigate('/employee/shared') }} className={`mb-1 block w-full rounded-lg p-2 text-left text-xs ${item.read ? 'text-slate-500' : 'bg-emerald-50 text-slate-700'}`}>{item.message}</button>)}</div>}</div><button type="button" onClick={() => navigate('/employee/profile')} className="flex items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 py-2 text-xs font-semibold"><UserRound size={14} /> Profile</button><div className="hidden items-center gap-2 sm:flex"><span className="flex size-9 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-800">{profile.name.split(' ').map((part) => part[0]).join('')}</span><div className="text-xs"><p className="font-bold">{profile.name}</p><p className="text-emerald-800">Employee</p></div></div></div></header>
       {notice && <div role="status" className="mb-4 flex items-center justify-between gap-2 rounded-xl bg-emerald-50 px-3 py-2.5 text-sm text-emerald-900">{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss message"><X size={15} /></button></div>}
       {page === 'documents' ? renderDocuments() : page === 'upload' ? renderUpload() : page === 'folders' ? renderFolders() : page === 'received' ? renderReceivedDocuments() : page === 'shared' ? renderShares() : page === 'permissions' ? renderPermissions() : page === 'activity' ? renderActivity() : page === 'profile' ? renderProfile() : renderDashboard()}
-      <p className="mt-5 text-xs text-slate-500">Mock employee workspace. Actions update this session only; backend persistence will be connected later.</p>
+      <p className="mt-5 text-xs text-slate-500">DocTrust Employee Workspace. Connected to secure backend storage and audit logging.</p>
     </div>
     {renderModal()}
     {modal?.type === 'logout' && <Modal title="Sign out of DocTrust?" onClose={() => setModal(null)}><p className="text-sm text-slate-600">Your session will end and you will return to the login page. Unsaved work may be lost.</p><div className="mt-5 flex justify-end gap-2"><ActionButton onClick={() => setModal(null)}>Cancel</ActionButton><ActionButton variant="primary" onClick={async () => { await logout(); navigate('/'); }}><LogOut size={13} /> Sign Out</ActionButton></div></Modal>}
   </main>
 }
+

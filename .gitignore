@@ -57,6 +57,8 @@ backend/media/
 media/
 backend/uploads/
 uploads/
+backend/storage/
+storage/
 backend/staticfiles/
 staticfiles/
 db.sqlite3
@@ -89,6 +91,7 @@ docker-compose.override.yml
 *.sql
 *.sql.gz
 *.dump
+backups/
 
 # ── Editor & IDE Configuration ───────────────────────────────────────────────
 .vscode/*
