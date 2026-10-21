@@ -1,5 +1,82 @@
-# Logs
-logs
+# ==============================================================================
+# DocTrust — Git Ignore Rules
+# ==============================================================================
+
+# ── Environment & Secrets ─────────────────────────────────────────────────────
+# NEVER commit sensitive configuration or cryptographic secrets to version control.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+
+# ── Dependencies & Package Managers ──────────────────────────────────────────
+node_modules/
+backend/venv/
+backend/.venv/
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ── Frontend & Build Outputs (Vite / React) ───────────────────────────────────
+dist/
+dist-ssr/
+build/
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+
+# ── Python / Django ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+eggs/
+develop-eggs/
+downloads/
+parts/
+bin/
+var/
+sdist/
+wheel/
+*.manifest
+*.spec
+
+# Django media, staticfiles & SQLite databases
+backend/media/
+media/
+backend/uploads/
+uploads/
+backend/staticfiles/
+staticfiles/
+db.sqlite3
+db.sqlite3-journal
+
+# ── Testing, Coverage & Linters ──────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.tox/
+.nox/
+
+# ── Logs & Debugging ─────────────────────────────────────────────────────────
+logs/
+backend/logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -7,45 +84,40 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# ── Docker & Database Dumps ──────────────────────────────────────────────────
+docker-compose.override.yml
+*.sql
+*.sql.gz
+*.dump
 
-# Editor directories and files
+# ── Editor & IDE Configuration ───────────────────────────────────────────────
 .vscode/*
-!.vscode/extensions.json
 !.vscode/settings.json
-.idea
-.DS_Store
+!.vscode/extensions.json
+.idea/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+*.sublime-workspace
+*.sublime-project
 
-# ── Environment secrets ──
-.env
-.env.*
-!.env.example
+# ── Operating System Artifacts ───────────────────────────────────────────────
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 
-# ── Python / Django ──
-venv/
-.venv/
-env/
-ENV/
-backend/venv/
-backend/.venv/
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-*.egg
-.pytest_cache/
-.mypy_cache/
-db.sqlite3
-backend/staticfiles/
-backend/media/
+# Windows
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
 
-# ── Docker ──
-docker-compose.override.yml
+# ── Temporary & Backup Files ─────────────────────────────────────────────────
+*.tmp
+*.temp
+*.bak
+*.local
