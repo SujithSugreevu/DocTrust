@@ -1,5 +1,4 @@
-
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ShieldCheck,
@@ -10,7 +9,9 @@ import {
   EyeOff,
   LogIn,
   ArrowRight,
+  X,
 } from 'lucide-react'
+import { getCurrentUser, login, requestPasswordReset } from '../services/auth.js'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -20,10 +21,72 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(false)
   const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  function handleSubmit(event) {
+  // Forgot password modal state
+  const [showForgotModal, setShowForgotModal] = useState(false)
+  const [forgotEmail, setForgotEmail] = useState('')
+  const [forgotLoading, setForgotLoading] = useState(false)
+  const [forgotMessage, setForgotMessage] = useState('')
+  const [forgotError, setForgotError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    getCurrentUser().then((user) => {
+      if (active && user) {
+        if (user.role === 'ADMIN') {
+          navigate('/admin/dashboard', { replace: true })
+        } else {
+          navigate('/employee/dashboard', { replace: true })
+        }
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [navigate])
+
+  async function handleSubmit(event) {
     event.preventDefault()
-    navigate(role === 'Administrator' ? '/admin/dashboard' : '/employee/dashboard')
+    setLoading(true)
+    setError('')
+    setMessage('')
+
+    const roleMap = { Administrator: 'ADMIN', Employee: 'EMPLOYEE' }
+    const expectedRole = roleMap[role] || 'ADMIN'
+
+    try {
+      const user = await login({ username, password, rememberMe, expectedRole })
+      // Redirect according to verified user role from backend
+      if (user.role === 'ADMIN') {
+        navigate('/admin/dashboard')
+      } else {
+        navigate('/employee/dashboard')
+      }
+    } catch (err) {
+      setError(err.message || 'Invalid username/email or password.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleForgotSubmit(e) {
+    e.preventDefault()
+    setForgotLoading(true)
+    setForgotError('')
+    setForgotMessage('')
+
+    try {
+      const res = await requestPasswordReset(forgotEmail)
+      setForgotMessage(
+        res.detail || 'If an account exists for that email, password reset instructions will be sent.'
+      )
+    } catch (err) {
+      setForgotError(err.message || 'Unable to process password reset request.')
+    } finally {
+      setForgotLoading(false)
+    }
   }
 
   return (
@@ -145,7 +208,11 @@ export default function Login() {
 
                 <button
                   type="button"
-                  onClick={() => setMessage('Password recovery will be implemented in a later step.')}
+                  onClick={() => {
+                    setShowForgotModal(true)
+                    setForgotMessage('')
+                    setForgotError('')
+                  }}
                   className="flex items-center gap-2 font-semibold text-emerald-800 hover:text-emerald-950"
                 >
                   <LockKeyhole size={18} />
@@ -155,12 +222,19 @@ export default function Login() {
 
               <button
                 type="submit"
-                className="flex w-full items-center justify-center gap-2 rounded-full bg-[#087c5b] px-5 py-3.5 font-bold text-white transition hover:bg-[#06684d] focus-visible:outline-offset-4"
+                disabled={loading}
+                className="flex w-full items-center justify-center gap-2 rounded-full bg-[#087c5b] px-5 py-3.5 font-bold text-white transition hover:bg-[#06684d] focus-visible:outline-offset-4 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <LogIn size={19} />
-                Log In
+                {loading ? 'Signing In...' : 'Log In'}
                 <ArrowRight size={16} className="sr-only" />
               </button>
+
+              {error && (
+                <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+                  {error}
+                </p>
+              )}
 
               {message && (
                 <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900">
@@ -168,14 +242,88 @@ export default function Login() {
                 </p>
               )}
 
-              <p className="pt-1 text-sm leading-relaxed text-slate-500">
-                Demo sign-in opens the selected workspace. Authentication will be
-                connected to the server later.
+              <p className="pt-1 text-xs leading-relaxed text-slate-500">
+                Protected by DocTrust enterprise role-based authorization and session security.
               </p>
             </form>
           </div>
         </section>
       </div>
+
+      {/* Forgot Password Modal */}
+      {showForgotModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl sm:p-8">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <span className="flex size-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-800">
+                  <LockKeyhole size={20} />
+                </span>
+                <h3 className="text-xl font-bold text-slate-900">Reset Password</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowForgotModal(false)}
+                className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <p className="mb-4 text-sm text-slate-600">
+              Enter your registered email address and we will send password reset instructions.
+            </p>
+
+            <form onSubmit={handleForgotSubmit} className="space-y-4">
+              <div>
+                <label htmlFor="forgot-email" className="mb-2 block text-sm font-semibold text-slate-800">
+                  Registered Email
+                </label>
+                <input
+                  id="forgot-email"
+                  type="email"
+                  required
+                  placeholder="user@example.com"
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-base outline-none transition focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
+                />
+              </div>
+
+              {forgotError && (
+                <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+                  {forgotError}
+                </p>
+              )}
+
+              {forgotMessage && (
+                <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+                  <p className="font-semibold">{forgotMessage}</p>
+                  <p className="mt-1 text-emerald-700">Check your inbox or developer terminal for the reset link.</p>
+                </div>
+              )}
+
+              <div className="mt-6 flex justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowForgotModal(false)}
+                  className="rounded-full border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={forgotLoading}
+                  className="rounded-full bg-[#087c5b] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#06684d] disabled:opacity-60"
+                >
+                  {forgotLoading ? 'Sending...' : 'Send Reset Link'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </main>
   )
 }

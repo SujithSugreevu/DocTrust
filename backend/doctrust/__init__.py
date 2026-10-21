@@ -1,0 +1,1 @@
+"""DocTrust Django application package."""

@@ -2,6 +2,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 
 import Login from './pages/Login.jsx'
+import ResetPassword from './pages/ResetPassword.jsx'
 import AdminDashboard from './pages/AdminDashboard.jsx'
 import UserManagement from './pages/UserManagement.jsx'
 import EmployeePortal from './pages/EmployeePortal.jsx'
@@ -20,8 +21,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Login */}
+        {/* Authentication */}
         <Route path="/" element={<Login />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
 
         {/* Administrator */}
         <Route path="/admin/dashboard" element={<AdminDashboard />} />

@@ -5,6 +5,7 @@ import {
   Folder, History, LockKeyhole, LogOut, Pencil, Plus, Search, Settings2,
   Share2, ShieldCheck, SlidersHorizontal, Trash2, Upload, UserRound, X,
 } from 'lucide-react'
+import { logout } from '../services/auth.js'
 
 const initialDocuments = [
   { id: 1, name: 'Project_Report.pdf', category: 'Reports', type: 'PDF', size: '2.4 MB', modified: '20 Oct 2026', owner: 'John Doe', folder: 'Reports', description: 'Quarterly project report and status.' },
@@ -515,6 +516,6 @@ export default function EmployeePortal() {
       <p className="mt-5 text-xs text-slate-500">Mock employee workspace. Actions update this session only; backend persistence will be connected later.</p>
     </div>
     {renderModal()}
-    {modal?.type === 'logout' && <Modal title="Sign out of DocTrust?" onClose={() => setModal(null)}><p className="text-sm text-slate-600">Your session will end and you will return to the login page. Unsaved work may be lost.</p><div className="mt-5 flex justify-end gap-2"><ActionButton onClick={() => setModal(null)}>Cancel</ActionButton><ActionButton variant="primary" onClick={() => navigate('/') }><LogOut size={13} /> Sign Out</ActionButton></div></Modal>}
+    {modal?.type === 'logout' && <Modal title="Sign out of DocTrust?" onClose={() => setModal(null)}><p className="text-sm text-slate-600">Your session will end and you will return to the login page. Unsaved work may be lost.</p><div className="mt-5 flex justify-end gap-2"><ActionButton onClick={() => setModal(null)}>Cancel</ActionButton><ActionButton variant="primary" onClick={async () => { await logout(); navigate('/'); }}><LogOut size={13} /> Sign Out</ActionButton></div></Modal>}
   </main>
 }

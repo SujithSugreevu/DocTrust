@@ -19,6 +19,7 @@ import {
   X,
   Settings,
 } from 'lucide-react'
+import { logout } from '../services/auth.js'
 
 const adminLinks = [
   ['Dashboard', '/admin/dashboard'],
@@ -781,6 +782,17 @@ export function AdminProfile() {
 
 export function LogoutPage() {
   const navigate = useNavigate()
+  const [loggingOut, setLoggingOut] = useState(false)
+
+  async function handleConfirmLogout() {
+    setLoggingOut(true)
+    try {
+      await logout()
+    } finally {
+      setLoggingOut(false)
+      navigate('/')
+    }
+  }
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#eafbf3] p-4">
@@ -791,26 +803,28 @@ export function LogoutPage() {
 
         <h1 className="mt-4 text-2xl font-bold">Log out of DocTrust?</h1>
         <p className="mt-2 text-sm text-slate-500">
-          This demo returns you to login. Real session termination requires authentication integration.
+          Your active session will be securely terminated on the server.
         </p>
 
         <div className="mt-6 flex justify-center gap-3">
           <button
             type="button"
             onClick={() => navigate(-1)}
-            className="rounded-full border px-5 py-2.5 text-sm"
+            disabled={loggingOut}
+            className="rounded-full border px-5 py-2.5 text-sm transition hover:bg-slate-50"
           >
             Cancel
           </button>
           <button
             type="button"
-            onClick={() => navigate('/')}
-            className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white"
+            onClick={handleConfirmLogout}
+            disabled={loggingOut}
+            className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:opacity-60"
           >
-            Return to login
+            {loggingOut ? 'Signing out...' : 'Sign Out'}
           </button>
         </div>
       </section>
     </main>
   )
-}
+}

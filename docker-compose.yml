@@ -1,0 +1,27 @@
+# DocTrust Docker Compose
+# Start: docker compose up -d
+# Stop:  docker compose down        (keeps data)
+# Reset: docker compose down -v     (DELETES data)
+
+services:
+  # ── PostgreSQL Database ──────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: doctrust_db
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # Bind to localhost only — not exposed to the network
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - doctrust_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  doctrust_pgdata:
+    name: doctrust_pgdata
