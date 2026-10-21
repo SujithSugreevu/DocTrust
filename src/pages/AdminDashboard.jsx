@@ -19,8 +19,6 @@ import {
   UserRound,
   Users,
   X,
-  Check,
-  CheckCheck,
   ExternalLink,
   Clock,
 } from 'lucide-react'
@@ -52,8 +50,7 @@ const navigation = [
 const stats = [
   { label: 'Registered Users', value: 152, icon: Users, color: 'blue', route: '/admin/users', description: 'Manage registered accounts' },
   { label: 'Total Documents', value: 486, icon: FileText, color: 'teal', route: '/admin/documents', description: 'Review document records' },
-  { label: 'Document Owners', value: 48, icon: Folder, color: 'amber', route: '/admin/users', description: 'Find document owners' },
-  { label: 'Viewers', value: 96, icon: Eye, color: 'purple', route: '/admin/users', description: 'Review viewer accounts' },
+  { label: 'Employees', value: 144, icon: Folder, color: 'amber', route: '/admin/users?role=Employee', description: 'Manage employee accounts' },
   { label: 'Administrators', value: 8, icon: Shield, color: 'rose', route: '/admin/users', description: 'Review administrator accounts' },
 ]
 
@@ -257,13 +254,8 @@ export default function AdminDashboard() {
   }
 
   function openStat(stat) {
-    if (stat.label === 'Document Owners') {
-      navigate('/admin/users?role=Document%20Owner')
-      return
-    }
-
-    if (stat.label === 'Viewers') {
-      navigate('/admin/users?role=Viewer')
+    if (stat.label === 'Employees') {
+      navigate('/admin/users?role=Employee')
       return
     }
 
@@ -376,7 +368,7 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        <section aria-label="System statistics" className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
+        <section aria-label="System statistics" className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
           {stats.map((stat) => {
             const Icon = stat.icon
             const iconColors = {

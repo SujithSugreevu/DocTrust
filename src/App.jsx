@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import Login from './pages/Login.jsx'
 import AdminDashboard from './pages/AdminDashboard.jsx'
 import UserManagement from './pages/UserManagement.jsx'
+import EmployeePortal from './pages/EmployeePortal.jsx'
 
 import {
   DocumentOverview,
@@ -13,13 +14,6 @@ import {
   SystemSettings,
   AdminProfile,
   LogoutPage,
-  OwnerDocuments,
-  OwnerAccess,
-  OwnerActivity,
-  OwnerProfile,
-  ViewerDocuments,
-  ViewerActivity,
-  ViewerProfile,
 } from './pages/Additionalpages.jsx'
 
 export default function App() {
@@ -39,16 +33,8 @@ export default function App() {
         <Route path="/admin/settings" element={<SystemSettings />} />
         <Route path="/admin/profile" element={<AdminProfile />} />
 
-        {/* Document Owner */}
-        <Route path="/owner/documents" element={<OwnerDocuments />} />
-        <Route path="/owner/access" element={<OwnerAccess />} />
-        <Route path="/owner/activity" element={<OwnerActivity />} />
-        <Route path="/owner/profile" element={<OwnerProfile />} />
-
-        {/* Viewer */}
-        <Route path="/viewer/documents" element={<ViewerDocuments />} />
-        <Route path="/viewer/activity" element={<ViewerActivity />} />
-        <Route path="/viewer/profile" element={<ViewerProfile />} />
+        {/* Employee */}
+        <Route path="/employee/*" element={<EmployeePortal />} />
 
         {/* Logout */}
         <Route path="/logout" element={<LogoutPage />} />

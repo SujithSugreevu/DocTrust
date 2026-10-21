@@ -32,21 +32,6 @@ const adminLinks = [
   ['Logout', '/logout'],
 ]
 
-const ownerLinks = [
-  ['My Documents', '/owner/documents'],
-  ['Shared Access', '/owner/access'],
-  ['Activity', '/owner/activity'],
-  ['Profile', '/owner/profile'],
-  ['Logout', '/logout'],
-]
-
-const viewerLinks = [
-  ['Shared Documents', '/viewer/documents'],
-  ['Recent Activity', '/viewer/activity'],
-  ['Profile', '/viewer/profile'],
-  ['Logout', '/logout'],
-]
-
 const iconMap = {
   Dashboard: ChartNoAxesColumn,
   'User Management': Users,
@@ -57,11 +42,6 @@ const iconMap = {
   'System Settings': Settings,
   Profile: UserRound,
   Logout: LogOut,
-  'My Documents': FileText,
-  'Shared Access': Users,
-  Activity,
-  'Recent Activity': Activity,
-  'Shared Documents': FileText,
 }
 
 const documents = [
@@ -97,25 +77,11 @@ function Sidebar({ role = 'Administrator' }) {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const links =
-    role === 'Document Owner'
-      ? ownerLinks
-      : role === 'Viewer'
-        ? viewerLinks
-        : adminLinks
-
-  const home =
-    role === 'Document Owner'
-      ? '/owner/documents'
-      : role === 'Viewer'
-        ? '/viewer/documents'
-        : '/admin/dashboard'
-
   return (
     <aside className="w-full shrink-0 bg-gradient-to-b from-[#07523f] to-[#00372b] p-4 text-white md:min-h-screen md:w-60">
       <button
         type="button"
-        onClick={() => navigate(home)}
+        onClick={() => navigate('/admin/dashboard')}
         className="mb-5 flex items-center gap-2 px-2 text-lg font-bold"
       >
         <ShieldCheck size={22} />
@@ -130,7 +96,7 @@ function Sidebar({ role = 'Administrator' }) {
         aria-label={`${role} navigation`}
         className="grid grid-cols-2 gap-1 md:flex md:flex-col"
       >
-        {links.map(([label, path]) => {
+        {adminLinks.map(([label, path]) => {
           const active = location.pathname === path
           const Icon = iconMap[label] || ChevronRight
 
@@ -811,146 +777,6 @@ function ProfilePage({ role }) {
 
 export function AdminProfile() {
   return <ProfilePage role="Administrator" />
-}
-
-export function OwnerProfile() {
-  return <ProfilePage role="Document Owner" />
-}
-
-export function ViewerProfile() {
-  return <ProfilePage role="Viewer" />
-}
-
-export function OwnerDocuments() {
-  const [query, setQuery] = useState('')
-  const [notice, setNotice] = useState('')
-
-  const mine = documents.filter((doc) => doc.owner === 'John Doe')
-  const rows = mine.filter((doc) => doc.name.toLowerCase().includes(query.toLowerCase()))
-
-  return (
-    <Shell role="Document Owner" title="My Documents" subtitle="Manage your document records and review access">
-      <div className="mb-4 flex flex-wrap gap-3">
-        <div className="min-w-[220px] flex-1">
-          <SearchField value={query} onChange={setQuery} placeholder="Search my documents" />
-        </div>
-        <button
-          type="button"
-          onClick={() => setNotice('File upload will be connected to backend storage later.')}
-          className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white"
-        >
-          Upload document
-        </button>
-      </div>
-
-      {notice && <p role="status" className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900">{notice}</p>}
-
-      <Table
-        headers={['Document', 'Type', 'Date', 'Access', 'Status', 'Actions']}
-        rows={rows.map((doc) => [
-          doc.name,
-          doc.type,
-          doc.date,
-          doc.access,
-          <Pill key={`${doc.id}-status`} value={doc.status} />,
-          <button
-            key={`${doc.id}-access`}
-            type="button"
-            onClick={() => setNotice(`Access management for ${doc.name} will be connected to the backend.`)}
-            className="font-semibold text-emerald-800"
-          >
-            Manage access
-          </button>,
-        ])}
-      />
-    </Shell>
-  )
-}
-
-export function OwnerAccess() {
-  return (
-    <Shell role="Document Owner" title="Shared Access" subtitle="Review who can access your documents">
-      <Table
-        headers={['Document', 'Owner', 'Shared with', 'Permission', 'Status']}
-        rows={permissions.filter((item) => item.owner === 'John Doe').map((item) => [
-          item.document,
-          item.owner,
-          item.user,
-          item.permission,
-          <Pill key={item.document} value={item.status} />,
-        ])}
-      />
-    </Shell>
-  )
-}
-
-export function OwnerActivity() {
-  return (
-    <Shell role="Document Owner" title="My Activity" subtitle="Recent actions related to your documents">
-      <Table
-        headers={['Date', 'User', 'Action', 'Category', 'Result']}
-        rows={activities.filter((item) => item.user === 'John Doe' || item.action.toLowerCase().includes('document')).map((item) => [
-          item.date,
-          item.user,
-          item.action,
-          item.category,
-          <Pill key={item.date} value={item.result} />,
-        ])}
-      />
-    </Shell>
-  )
-}
-
-export function ViewerDocuments() {
-  const [query, setQuery] = useState('')
-  const [selected, setSelected] = useState(null)
-
-  const shared = documents.filter((doc) => ['DOC-1001', 'DOC-1003', 'DOC-1005'].includes(doc.id))
-  const rows = shared.filter((doc) => doc.name.toLowerCase().includes(query.toLowerCase()))
-
-  return (
-    <Shell role="Viewer" title="Shared Documents" subtitle="Open documents shared with you">
-      <div className="mb-4">
-        <SearchField value={query} onChange={setQuery} placeholder="Search shared documents" />
-      </div>
-
-      <Table
-        headers={['Document', 'Owner', 'Type', 'Status', 'Action']}
-        rows={rows.map((doc) => [
-          doc.name,
-          doc.owner,
-          doc.type,
-          <Pill key={`${doc.id}-status`} value="Allowed" />,
-          <button
-            key={`${doc.id}-details`}
-            type="button"
-            onClick={() => setSelected(doc)}
-            className="inline-flex items-center gap-1 font-semibold text-emerald-800"
-          >
-            <Eye size={14} /> View details
-          </button>,
-        ])}
-      />
-
-      {selected && <Details title={selected.name} data={selected} onClose={() => setSelected(null)} />}
-    </Shell>
-  )
-}
-
-export function ViewerActivity() {
-  return (
-    <Shell role="Viewer" title="Recent Activity" subtitle="Recent sample activity for shared documents">
-      <Table
-        headers={['Date', 'Action', 'Category', 'Result']}
-        rows={activities.filter((item) => item.category === 'Document').map((item) => [
-          item.date,
-          item.action,
-          item.category,
-          <Pill key={item.date} value={item.result} />,
-        ])}
-      />
-    </Shell>
-  )
 }
 
 export function LogoutPage() {

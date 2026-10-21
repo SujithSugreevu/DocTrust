@@ -1,10 +1,11 @@
 
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   ShieldCheck,
   LockKeyhole,
   History,
-  Folder,
+  UserRound,
   Eye,
   EyeOff,
   LogIn,
@@ -12,15 +13,17 @@ import {
 } from 'lucide-react'
 
 export default function Login() {
+  const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [role, setRole] = useState('Administrator')
   const [showPassword, setShowPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(false)
   const [message, setMessage] = useState('')
 
   function handleSubmit(event) {
     event.preventDefault()
-    setMessage('Login authentication will be connected later.')
+    navigate(role === 'Administrator' ? '/admin/dashboard' : '/employee/dashboard')
   }
 
   return (
@@ -56,10 +59,7 @@ export default function Login() {
               <ShieldCheck size={17} /> Administrator
             </span>
             <span className="flex items-center gap-2 rounded-full bg-white/15 px-4 py-2">
-              <Folder size={17} /> Document Owner
-            </span>
-            <span className="flex items-center gap-2 rounded-full bg-white/15 px-4 py-2">
-              <Eye size={17} /> Viewer
+              <UserRound size={17} /> Employee
             </span>
           </div>
         </section>
@@ -67,13 +67,27 @@ export default function Login() {
         <section className="flex items-center justify-center bg-[#eafbf3] px-5 py-10 sm:px-10 lg:px-12">
           <div className="w-full max-w-[580px] rounded-[26px] bg-white p-6 shadow-[0_8px_32px_rgba(20,80,55,0.09)] sm:p-9">
             <h2 className="text-2xl font-bold tracking-tight text-[#172033] sm:text-[30px]">
-              Administrator Login
+              {role} Login
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-500 sm:text-base">
               Sign in to manage users, audit activity and monitor security
             </p>
 
             <form onSubmit={handleSubmit} className="mt-5 space-y-4">
+              <div>
+                <label htmlFor="role" className="mb-2 block text-sm font-semibold text-slate-800">
+                  Sign in as
+                </label>
+                <select
+                  id="role"
+                  value={role}
+                  onChange={(event) => setRole(event.target.value)}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3.5 text-base outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
+                >
+                  <option>Administrator</option>
+                  <option>Employee</option>
+                </select>
+              </div>
               <div>
                 <label htmlFor="username" className="mb-2 block text-sm font-semibold text-slate-800">
                   Email or username
@@ -155,8 +169,8 @@ export default function Login() {
               )}
 
               <p className="pt-1 text-sm leading-relaxed text-slate-500">
-                The server verifies your account and role. Only active Administrator
-                accounts can sign in here. Failed attempts are recorded.
+                Demo sign-in opens the selected workspace. Authentication will be
+                connected to the server later.
               </p>
             </form>
           </div>

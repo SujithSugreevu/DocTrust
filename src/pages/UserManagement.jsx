@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Bell, Check, ChevronLeft, ChevronRight, CircleSlash,
   Filter, LayoutDashboard, FileText, Activity, ShieldCheck,
@@ -8,16 +8,16 @@ import {
 } from 'lucide-react'
 
 const initialUsers = [
-  { id: 1, name: 'John Doe', email: 'john@example.com', role: 'Document Owner', status: 'Active', lastLogin: '20 Oct 2026' },
-  { id: 2, name: 'Sara Smith', email: 'sara@example.com', role: 'Viewer', status: 'Active', lastLogin: '20 Oct 2026' },
-  { id: 3, name: 'Anna Green', email: 'anna@example.com', role: 'Viewer', status: 'Suspended', lastLogin: '13 Oct 2026' },
-  { id: 4, name: 'Tom Wilson', email: 'tom@example.com', role: 'Document Owner', status: 'Active', lastLogin: '19 Oct 2026' },
-  { id: 5, name: 'Lisa White', email: 'lisa@example.com', role: 'Viewer', status: 'Active', lastLogin: '19 Oct 2026' },
-  { id: 6, name: 'David Lee', email: 'david@example.com', role: 'Viewer', status: 'Active', lastLogin: '18 Oct 2026' },
-  { id: 7, name: 'Emma Davis', email: 'emma@example.com', role: 'Document Owner', status: 'Active', lastLogin: '17 Oct 2026' },
+  { id: 1, name: 'John Doe', email: 'john@example.com', role: 'Employee', status: 'Active', lastLogin: '20 Oct 2026' },
+  { id: 2, name: 'Sara Smith', email: 'sara@example.com', role: 'Employee', status: 'Active', lastLogin: '20 Oct 2026' },
+  { id: 3, name: 'Anna Green', email: 'anna@example.com', role: 'Employee', status: 'Suspended', lastLogin: '13 Oct 2026' },
+  { id: 4, name: 'Tom Wilson', email: 'tom@example.com', role: 'Employee', status: 'Active', lastLogin: '19 Oct 2026' },
+  { id: 5, name: 'Lisa White', email: 'lisa@example.com', role: 'Employee', status: 'Active', lastLogin: '19 Oct 2026' },
+  { id: 6, name: 'David Lee', email: 'david@example.com', role: 'Employee', status: 'Active', lastLogin: '18 Oct 2026' },
+  { id: 7, name: 'Emma Davis', email: 'emma@example.com', role: 'Employee', status: 'Active', lastLogin: '17 Oct 2026' },
   { id: 8, name: 'Admin User', email: 'admin@example.com', role: 'Administrator', status: 'Active', lastLogin: '20 Oct 2026', self: true },
-  { id: 9, name: 'Ryan Clark', email: 'ryan@example.com', role: 'Viewer', status: 'Active', lastLogin: '16 Oct 2026' },
-  { id: 10, name: 'Mia Taylor', email: 'mia@example.com', role: 'Document Owner', status: 'Active', lastLogin: '15 Oct 2026' },
+  { id: 9, name: 'Ryan Clark', email: 'ryan@example.com', role: 'Employee', status: 'Active', lastLogin: '16 Oct 2026' },
+  { id: 10, name: 'Mia Taylor', email: 'mia@example.com', role: 'Employee', status: 'Active', lastLogin: '15 Oct 2026' },
 ]
 
 const navItems = [
@@ -103,14 +103,16 @@ function Status({ value }) {
 }
 
 export default function UserManagement() {
+  const [searchParams] = useSearchParams()
   const [users, setUsers] = useState(initialUsers)
   const [search, setSearch] = useState('')
-  const [role, setRole] = useState('All roles')
+  const initialRole = searchParams.get('role') === 'Employee' ? 'Employee' : 'All roles'
+  const [role, setRole] = useState(initialRole)
   const [status, setStatus] = useState('All statuses')
-  const [applied, setApplied] = useState({ search: '', role: 'All roles', status: 'All statuses' })
+  const [applied, setApplied] = useState({ search: '', role: initialRole, status: 'All statuses' })
   const [page, setPage] = useState(1)
   const [dialog, setDialog] = useState(null)
-  const [draft, setDraft] = useState({ name: '', email: '', role: 'Viewer' })
+  const [draft, setDraft] = useState({ name: '', email: '', role: 'Employee' })
   const [notice, setNotice] = useState('')
 
   const filteredUsers = useMemo(() => users.filter((user) => {
@@ -174,7 +176,7 @@ export default function UserManagement() {
   }
 
   function openAdd() {
-    setDraft({ name: '', email: '', role: 'Viewer' })
+    setDraft({ name: '', email: '', role: 'Employee' })
     setDialog({ type: 'add' })
   }
 
@@ -238,8 +240,7 @@ export default function UserManagement() {
               <select value={role} onChange={(event) => setRole(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-normal">
                 <option>All roles</option>
                 <option>Administrator</option>
-                <option>Document Owner</option>
-                <option>Viewer</option>
+                <option>Employee</option>
               </select>
             </label>
 
@@ -398,8 +399,7 @@ export default function UserManagement() {
                 <label className="block text-sm font-medium">
                   Role
                   <select value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value })} className="mt-1 w-full rounded-xl border bg-white px-3 py-2.5">
-                    <option>Viewer</option>
-                    <option>Document Owner</option>
+                    <option>Employee</option>
                     <option>Administrator</option>
                   </select>
                 </label>

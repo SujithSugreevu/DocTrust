@@ -4,7 +4,7 @@
 
 ### Prompt / Summary
 
-Worked with AI to develop the DocTrust frontend using React, Vite, Tailwind CSS, React Router, and Lucide React. The application includes separate interfaces for Administrators, Document Owners, and Viewers.
+Worked with AI to develop the DocTrust frontend using React, Vite, Tailwind CSS, React Router, and Lucide React. The application includes separate interfaces for Administrators and Employees.
 
 ### What the AI Produced
 
@@ -12,11 +12,11 @@ Generated React components, routing, dashboards, navigation, tables, profiles, a
 
 ### What Was Wrong With It
 
-Some dashboard controls, notifications, and statistics were not functioning as expected. The Document Owner and Viewer workflows also needed further testing.
+Some dashboard controls, notifications, and statistics were not functioning as expected. The unified Employee workflow also needed further testing.
 
 ### What I Did Instead
 
-Decided to improve the existing application step by step, focusing on administrator dashboard interactions first, followed by Document Owner and Viewer features. The plan is to test navigation, document actions, permission restrictions, and user feedback using mock data before backend integration.
+Decided to improve the existing application step by step, focusing on administrator dashboard interactions first, followed by the unified Employee workspace. The plan is to test navigation, document actions, permission restrictions, and user feedback using mock data before backend integration.
 
 ### Progress Documentation
 
