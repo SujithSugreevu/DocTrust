@@ -53,6 +53,12 @@ class AuditEvent(models.Model):
         SYSTEM_SETTINGS_RESET = "SYSTEM_SETTINGS_RESET", "System Settings Reset"
         MAINTENANCE_MODE_TOGGLE = "MAINTENANCE_MODE_TOGGLE", "Maintenance Mode Toggled"
         SECURITY_ALERT = "SECURITY_ALERT", "Security Alert Triggered"
+        # Two-Factor Authentication actions
+        MFA_ENROLL = "MFA_ENROLL", "Two-Factor Authentication Enrolled"
+        MFA_DISABLE = "MFA_DISABLE", "Two-Factor Authentication Disabled"
+        MFA_LOGIN_SUCCESS = "MFA_LOGIN_SUCCESS", "Two-Factor Authentication Succeeded"
+        MFA_LOGIN_FAILED = "MFA_LOGIN_FAILED", "Two-Factor Authentication Failed"
+        MFA_RECOVERY_USED = "MFA_RECOVERY_USED", "Two-Factor Recovery Code Used"
 
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,

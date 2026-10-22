@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity,
@@ -15,10 +15,22 @@ import {
   Users,
   LogOut,
   Eye,
+  EyeOff,
   X,
   Settings,
+  Copy,
+  Download,
+  KeyRound,
+  QrCode,
 } from 'lucide-react'
-import { logout } from '../services/auth.js'
+import {
+  logout,
+  getCurrentUser,
+  getTwoFactorStatus,
+  enrollTwoFactor,
+  verifyEnrollTwoFactor,
+  disableTwoFactor,
+} from '../services/auth.js'
 
 const adminLinks = [
   ['Dashboard', '/admin/dashboard'],
@@ -522,9 +534,184 @@ function ProfilePage({ role }) {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [showPasswords, setShowPasswords] = useState(false)
   const [message, setMessage] = useState('')
-  const [twoFactorEnabled] = useState(false)
+
+  // Real 2FA state from backend
+  const [tfaStatus, setTfaStatus] = useState({
+    is_enabled: false,
+    enabled_at: null,
+    recovery_codes_remaining: 0,
+    mfa_required_by_policy: false,
+  })
+  const [tfaLoading, setTfaLoading] = useState(true)
+  const [tfaActionLoading, setTfaActionLoading] = useState(false)
+  const [tfaError, setTfaError] = useState('')
+  const [tfaSuccess, setTfaSuccess] = useState('')
+
+  // 2FA Enrollment state
+  const [enrollData, setEnrollData] = useState(null)
+  const [verifyCode, setVerifyCode] = useState('')
+  const [newRecoveryCodes, setNewRecoveryCodes] = useState(null)
+  const [copiedCodes, setCopiedCodes] = useState(false)
+  const [copiedKey, setCopiedKey] = useState(false)
+
+  // 2FA Disable modal state
+  const [showDisableModal, setShowDisableModal] = useState(false)
+  const [disablePassword, setDisablePassword] = useState('')
+  const [disableCode, setDisableCode] = useState('')
+  const [showDisablePassword, setShowDisablePassword] = useState(false)
+  const [disabling, setDisabling] = useState(false)
+  const [disableError, setDisableError] = useState('')
 
   const isAdmin = role === 'Administrator'
+
+  const loadProfileAndTfa = useCallback(async () => {
+    try {
+      setTfaLoading(true)
+      const [user, status] = await Promise.all([
+        getCurrentUser().catch(() => null),
+        getTwoFactorStatus().catch((err) => {
+          console.error('Failed to load 2FA status:', err)
+          return null
+        }),
+      ])
+
+      if (user) {
+        if (user.first_name || user.last_name) {
+          setName(`${user.first_name} ${user.last_name}`.trim())
+        } else if (user.username) {
+          setName(user.username)
+        }
+        if (user.email) {
+          setEmail(user.email)
+        }
+      }
+
+      if (status) {
+        setTfaStatus(status)
+      }
+    } finally {
+      setTfaLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadProfileAndTfa()
+  }, [loadProfileAndTfa])
+
+  async function handleStartEnroll() {
+    setTfaError('')
+    setTfaSuccess('')
+    setTfaActionLoading(true)
+    try {
+      const data = await enrollTwoFactor()
+      setEnrollData(data)
+      setVerifyCode('')
+      setNewRecoveryCodes(null)
+    } catch (err) {
+      setTfaError(err.message || 'Failed to start 2FA enrollment.')
+    } finally {
+      setTfaActionLoading(false)
+    }
+  }
+
+  async function handleVerifyEnroll(e) {
+    if (e) e.preventDefault()
+    if (!verifyCode || verifyCode.trim().length !== 6) {
+      setTfaError('Please enter a valid 6-digit verification code.')
+      return
+    }
+
+    setTfaError('')
+    setTfaSuccess('')
+    setTfaActionLoading(true)
+    try {
+      const res = await verifyEnrollTwoFactor(verifyCode.trim())
+      setTfaSuccess('Two-factor authentication has been successfully activated on your account.')
+      setNewRecoveryCodes(res.recovery_codes || [])
+      setEnrollData(null)
+      setVerifyCode('')
+      await loadProfileAndTfa()
+    } catch (err) {
+      setTfaError(err.message || 'Verification failed. Please check the code and try again.')
+    } finally {
+      setTfaActionLoading(false)
+    }
+  }
+
+  function handleCancelEnroll() {
+    setEnrollData(null)
+    setVerifyCode('')
+    setTfaError('')
+  }
+
+  function handleCopySecret() {
+    if (enrollData?.secret) {
+      navigator.clipboard.writeText(enrollData.secret)
+      setCopiedKey(true)
+      setTimeout(() => setCopiedKey(false), 2500)
+    }
+  }
+
+  function handleCopyRecoveryCodes() {
+    if (newRecoveryCodes && newRecoveryCodes.length > 0) {
+      navigator.clipboard.writeText(newRecoveryCodes.join('\n'))
+      setCopiedCodes(true)
+      setTimeout(() => setCopiedCodes(false), 2500)
+    }
+  }
+
+  function handleDownloadRecoveryCodes() {
+    if (!newRecoveryCodes || newRecoveryCodes.length === 0) return
+    const content = [
+      'DocTrust Two-Factor Authentication Recovery Codes',
+      `Account: ${email}`,
+      `Generated: ${new Date().toISOString()}`,
+      '',
+      'Important:',
+      '- Each code is single-use and can only be used once.',
+      '- Keep these codes in a secure, offline password manager or safe vault.',
+      '- If you lose your authenticator app, these codes are the only way to recover access.',
+      '',
+      ...newRecoveryCodes.map((c, i) => `${i + 1}. ${c}`),
+    ].join('\n')
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `doctrust-recovery-codes-${Date.now()}.txt`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleDisableSubmit(e) {
+    e.preventDefault()
+    if (!disablePassword) {
+      setDisableError('Current password is required.')
+      return
+    }
+    if (!disableCode) {
+      setDisableError('Authenticator or recovery code is required.')
+      return
+    }
+
+    setDisabling(true)
+    setDisableError('')
+    try {
+      await disableTwoFactor({ password: disablePassword, code: disableCode.trim() })
+      setShowDisableModal(false)
+      setDisablePassword('')
+      setDisableCode('')
+      setTfaSuccess('Two-factor authentication has been disabled.')
+      await loadProfileAndTfa()
+    } catch (err) {
+      setDisableError(err.message || 'Failed to disable 2FA. Verify your password and code.')
+    } finally {
+      setDisabling(false)
+    }
+  }
 
   function handlePasswordUpdate(event) {
     event.preventDefault()
@@ -650,31 +837,343 @@ function ProfilePage({ role }) {
       {isAdmin && (
         <>
           <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm">
-            <h2 className="mb-3 flex items-center gap-2 font-bold">
-              <ShieldCheck size={18} /> Two-Factor Authentication
-            </h2>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <h2 className="flex items-center gap-2 font-bold text-slate-900">
+                <ShieldCheck size={18} className="text-emerald-700" /> Two-Factor Authentication
+              </h2>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500">Status:</span>
+                <Pill value={tfaStatus.is_enabled ? 'Enabled' : 'Not enabled'} />
+              </div>
+            </div>
 
             <p className="text-sm text-slate-600">
-              Status:{' '}
-              <Pill value={twoFactorEnabled ? 'Enabled' : 'Not enabled'} />
+              Add a mandatory second verification step using an authenticator app (TOTP) to secure your account.
             </p>
 
-            <p className="mt-3 text-sm text-slate-500">
-              Add an extra layer of security to your account.
-            </p>
+            {tfaStatus.mfa_required_by_policy && (
+              <div className="mt-3 flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-xs text-amber-800 border border-amber-200">
+                <AlertTriangle size={15} className="shrink-0 mt-0.5 text-amber-600" />
+                <span>
+                  <strong>Security Policy:</strong> Multi-factor authentication is required for all Administrator accounts on this system.
+                </span>
+              </div>
+            )}
 
-            <button
-              type="button"
-              onClick={() => setMessage('Two-factor authentication requires backend integration before it can be enabled securely.')}
-              className="mt-4 inline-flex items-center gap-2 rounded-full border border-emerald-200 px-4 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-50"
-            >
-              <ShieldCheck size={16} /> Enable Two-Factor Authentication
-            </button>
+            {tfaSuccess && (
+              <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-emerald-50 p-3 text-xs text-emerald-900 border border-emerald-200">
+                <div className="flex items-center gap-2">
+                  <CheckCircle size={15} className="shrink-0 text-emerald-700" />
+                  <span>{tfaSuccess}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTfaSuccess('')}
+                  className="text-emerald-700 hover:text-emerald-900"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
 
-            <p className="mt-3 text-xs text-slate-500">
-              Demonstration only. Real two-factor authentication is not configured.
-            </p>
+            {tfaError && (
+              <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-rose-50 p-3 text-xs text-rose-800 border border-rose-200">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle size={15} className="shrink-0 text-rose-600" />
+                  <span>{tfaError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTfaError('')}
+                  className="text-rose-700 hover:text-rose-900"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+
+            {/* Display Recovery Codes Once After Enrollment */}
+            {newRecoveryCodes && newRecoveryCodes.length > 0 && (
+              <div className="mt-4 rounded-xl border-2 border-emerald-500 bg-emerald-50/50 p-4">
+                <div className="flex items-center gap-2 text-emerald-900 font-bold text-sm mb-1">
+                  <KeyRound size={17} className="text-emerald-700" />
+                  Save Your Recovery Codes
+                </div>
+                <p className="text-xs text-slate-700 mb-3">
+                  These single-use codes will only be shown <strong>once</strong>. Store them in a secure password manager or offline safe. If you ever lose access to your authenticator app, each code can be used once to sign in.
+                </p>
+
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 font-mono text-center text-xs font-bold text-slate-800 mb-3">
+                  {newRecoveryCodes.map((code, idx) => (
+                    <div key={idx} className="rounded-lg border border-slate-300 bg-white px-2 py-2 shadow-2xs tracking-wider">
+                      {code}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyRecoveryCodes}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-white border border-slate-300 px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                  >
+                    <Copy size={13} /> {copiedCodes ? 'Copied to Clipboard!' : 'Copy All Codes'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadRecoveryCodes}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-white border border-slate-300 px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                  >
+                    <Download size={13} /> Download .txt
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewRecoveryCodes(null)}
+                    className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-emerald-700 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 transition"
+                  >
+                    <CheckCircle size={13} /> I Have Saved These Codes
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* If 2FA is NOT enabled and NOT currently enrolling */}
+            {!tfaStatus.is_enabled && !enrollData && (
+              <div className="mt-4">
+                <button
+                  type="button"
+                  disabled={tfaActionLoading || tfaLoading}
+                  onClick={handleStartEnroll}
+                  className="inline-flex items-center gap-2 rounded-full bg-[#087c5b] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#06684d] disabled:opacity-60"
+                >
+                  <ShieldCheck size={16} />
+                  {tfaActionLoading ? 'Preparing Setup...' : 'Enable Two-Factor Authentication'}
+                </button>
+              </div>
+            )}
+
+            {/* If enrolling: QR code and verification input */}
+            {enrollData && (
+              <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/30 p-5">
+                <h3 className="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
+                  <QrCode size={17} className="text-emerald-700" />
+                  Set Up Authenticator App
+                </h3>
+
+                <ol className="space-y-3 text-xs text-slate-700">
+                  <li className="flex items-start gap-2">
+                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-[10px] font-bold text-white">1</span>
+                    <span>Install an authenticator app such as Google Authenticator, Microsoft Authenticator, 1Password, or Authy on your mobile device.</span>
+                  </li>
+
+                  <li className="flex items-start gap-2">
+                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-[10px] font-bold text-white">2</span>
+                    <div className="flex-1">
+                      <p>Scan this QR code with your authenticator app:</p>
+                      <div className="mt-2.5 flex flex-wrap items-center gap-4">
+                        {(() => {
+                          const qrSrc = enrollData?.qr_code || enrollData?.qr_code_svg || (typeof enrollData === 'string' ? enrollData : '')
+                          return qrSrc ? (
+                            <img
+                              src={qrSrc}
+                              alt="Two-Factor QR Code"
+                              className="size-44 rounded-xl border border-slate-200 bg-white p-2 shadow-xs"
+                            />
+                          ) : (
+                            <div className="flex size-44 items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white text-xs text-slate-400">
+                              Loading QR code...
+                            </div>
+                          )
+                        })()}
+                        <div className="text-xs">
+                          <p className="text-slate-500 mb-1">Cannot scan? Enter code manually:</p>
+                          <div className="flex items-center gap-2">
+                            <code className="rounded bg-white border border-slate-300 px-2 py-1 font-mono text-xs font-semibold text-slate-800 tracking-wider">
+                              {enrollData.secret}
+                            </code>
+                            <button
+                              type="button"
+                              onClick={handleCopySecret}
+                              className="rounded-lg border border-slate-300 bg-white p-1.5 text-slate-600 hover:bg-slate-50"
+                              title="Copy Secret"
+                            >
+                              <Copy size={13} />
+                            </button>
+                          </div>
+                          {copiedKey && <span className="text-[10px] text-emerald-700 font-semibold mt-1 block">Secret copied!</span>}
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+
+                  <li className="flex items-start gap-2 pt-1">
+                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-[10px] font-bold text-white">3</span>
+                    <form onSubmit={handleVerifyEnroll} className="flex-1">
+                      <label htmlFor="tfa-verify-code" className="block text-slate-700 mb-1 font-semibold">
+                        Enter the 6-digit verification code from your authenticator:
+                      </label>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          id="tfa-verify-code"
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={6}
+                          autoComplete="one-time-code"
+                          value={verifyCode}
+                          onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, ''))}
+                          placeholder="123456"
+                          className="w-36 rounded-xl border border-slate-300 bg-white px-3 py-2 text-center font-mono text-base tracking-widest outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
+                        />
+                        <button
+                          type="submit"
+                          disabled={tfaActionLoading || verifyCode.trim().length !== 6}
+                          className="inline-flex items-center gap-1.5 rounded-full bg-[#087c5b] px-4 py-2 text-xs font-semibold text-white transition hover:bg-[#06684d] disabled:opacity-50"
+                        >
+                          <CheckCircle size={14} />
+                          {tfaActionLoading ? 'Verifying...' : 'Confirm & Activate 2FA'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCancelEnroll}
+                          disabled={tfaActionLoading}
+                          className="rounded-full border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  </li>
+                </ol>
+              </div>
+            )}
+
+            {/* If 2FA IS enabled */}
+            {tfaStatus.is_enabled && (
+              <div className="mt-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 border border-slate-200 p-3.5 text-xs text-slate-700">
+                  <div className="space-y-1">
+                    <p>
+                      <strong>Active Authenticator:</strong> RFC 6238 TOTP Standard
+                    </p>
+                    {tfaStatus.enabled_at && (
+                      <p className="text-slate-500">
+                        Configured on: {new Date(tfaStatus.enabled_at).toLocaleString()}
+                      </p>
+                    )}
+                    <p className="text-slate-500">
+                      Unused recovery codes remaining: <strong>{tfaStatus.recovery_codes_remaining}</strong>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDisableModal(true)
+                      setDisableError('')
+                      setDisablePassword('')
+                      setDisableCode('')
+                    }}
+                    className="rounded-full border border-rose-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 transition"
+                  >
+                    Disable 2FA
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
+
+          {/* Disable 2FA Modal */}
+          {showDisableModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl sm:p-7">
+                <div className="mb-4 flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-rose-700 font-bold text-lg">
+                    <LockKeyhole size={20} />
+                    Disable Two-Factor Authentication
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowDisableModal(false)}
+                    className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <p className="mb-4 text-xs text-slate-600">
+                  To protect your account, please enter your current account password and either a valid 6-digit code from your authenticator app or a single-use recovery code.
+                </p>
+
+                {tfaStatus.mfa_required_by_policy && (
+                  <p className="mb-3 rounded-lg bg-amber-50 border border-amber-200 p-2.5 text-[11px] text-amber-800">
+                    <strong>Notice:</strong> MFA is required by security policy. Disabling 2FA will require you to set it up again at your next sign in.
+                  </p>
+                )}
+
+                <form onSubmit={handleDisableSubmit} className="space-y-3.5">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Current Password
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type={showDisablePassword ? 'text' : 'password'}
+                        required
+                        value={disablePassword}
+                        onChange={(e) => setDisablePassword(e.target.value)}
+                        placeholder="Enter current password"
+                        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowDisablePassword(!showDisablePassword)}
+                        className="rounded-xl border border-slate-200 px-3 text-slate-500 hover:bg-slate-50"
+                      >
+                        {showDisablePassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Authenticator Code or Recovery Code
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={disableCode}
+                      onChange={(e) => setDisableCode(e.target.value)}
+                      placeholder="123456 or XXXX-XXXX"
+                      className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+
+                  {disableError && (
+                    <p className="rounded-xl bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-800">
+                      {disableError}
+                    </p>
+                  )}
+
+                  <div className="mt-5 flex justify-end gap-2.5 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowDisableModal(false)}
+                      disabled={disabling}
+                      className="rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={disabling}
+                      className="rounded-full bg-rose-700 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-800 disabled:opacity-60"
+                    >
+                      {disabling ? 'Verifying...' : 'Confirm Disable 2FA'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
 
           <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm">
             <h2 className="mb-4 flex items-center gap-2 font-bold">

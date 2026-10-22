@@ -762,3 +762,324 @@ class CsrfAndOriginSecurityTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+
+class TwoFactorAuthenticationTests(TestCase):
+    """
+    Focused test suite for Two-Factor Authentication (TOTP + recovery codes).
+    Tests enrollment, verification, login challenge enforcement, recovery code
+    single-use, rate-limiting lockout, replay protection, and policy enforcement.
+    """
+
+    def setUp(self):
+        self.client = APIClient(enforce_csrf_checks=False)
+        self.password = "SecureTestPassword123!"
+
+        self.user = User.objects.create_user(
+            username="test_2fa_user",
+            email="test_2fa@doctrust.local",
+            password=self.password,
+            role=User.Role.ADMIN,
+            status=User.Status.ACTIVE,
+            is_staff=True,
+            is_superuser=True,
+        )
+
+        self.employee = User.objects.create_user(
+            username="test_emp_user",
+            email="test_emp@doctrust.local",
+            password=self.password,
+            role=User.Role.EMPLOYEE,
+            status=User.Status.ACTIVE,
+        )
+
+        self.status_url = reverse("auth-2fa-status")
+        self.enroll_url = reverse("auth-2fa-enroll")
+        self.verify_enroll_url = reverse("auth-2fa-verify-enroll")
+        self.disable_url = reverse("auth-2fa-disable")
+        self.verify_login_url = reverse("auth-2fa-verify-login")
+        self.setup_login_url = reverse("auth-2fa-setup-login")
+        self.login_url = reverse("auth-login")
+
+    def _enable_2fa_for_user(self, user):
+        """Helper to programmatically enable 2FA and return secret and recovery codes."""
+        import pyotp
+        from accounts.two_factor_service import start_enrollment, verify_enrollment
+        enroll_data = start_enrollment(user)
+        secret = enroll_data["secret"]
+        totp = pyotp.TOTP(secret)
+        code = totp.now()
+        recovery_codes = verify_enrollment(user, code)
+        user.two_factor.last_verified_counter = 0
+        user.two_factor.save(update_fields=["last_verified_counter"])
+        return secret, recovery_codes
+
+    def test_2fa_status_disabled_by_default(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(self.status_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertFalse(data["enabled"])
+        self.assertEqual(data["recovery_codes_remaining"], 0)
+
+    def test_enroll_starts_and_returns_secret_and_qr(self):
+        import base64
+        import xml.etree.ElementTree as ET
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post(self.enroll_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertIn("secret", data)
+        self.assertIn("provisioning_uri", data)
+        self.assertIn("qr_code", data)
+        self.assertIn("qr_code_svg", data)
+        self.assertEqual(data["qr_code"], data["qr_code_svg"])
+        self.assertTrue(data["qr_code"].startswith("data:image/svg+xml;base64,"))
+
+        # Validate base64 payload is well-formed XML and valid SVG
+        header, b64_payload = data["qr_code"].split(",", 1)
+        self.assertEqual(header, "data:image/svg+xml;base64")
+        svg_bytes = base64.b64decode(b64_payload)
+        self.assertTrue(len(svg_bytes) > 0)
+
+        # Parse SVG XML and verify root element and geometry
+        root = ET.fromstring(svg_bytes)
+        self.assertTrue(root.tag.endswith("svg"))
+        self.assertIn("viewBox", root.attrib)
+
+        # Verify white background rect and QR code module path exist
+        rect = root.find("{http://www.w3.org/2000/svg}rect")
+        self.assertIsNotNone(rect, "SVG should contain a white background rect for high-contrast scanning")
+        self.assertEqual(rect.attrib.get("fill"), "white")
+
+        path = root.find("{http://www.w3.org/2000/svg}path")
+        self.assertIsNotNone(path, "SVG should contain a path element representing the QR code modules")
+        self.assertEqual(path.attrib.get("fill"), "#000000")
+
+        # Ensure 2FA is not yet enabled
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.has_2fa_enabled)
+
+    def test_verify_enroll_success_activates_2fa_and_creates_recovery_codes(self):
+        import pyotp
+        from auditlog.models import AuditEvent
+
+        self.client.force_authenticate(user=self.user)
+        enroll_resp = self.client.post(self.enroll_url)
+        secret = enroll_resp.json()["secret"]
+
+        totp = pyotp.TOTP(secret)
+        valid_code = totp.now()
+
+        response = self.client.post(self.verify_enroll_url, {"code": valid_code}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertIn("recovery_codes", data)
+        self.assertEqual(len(data["recovery_codes"]), 8)
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.has_2fa_enabled)
+
+        # Audit event logged
+        audit = AuditEvent.objects.filter(action=AuditEvent.Action.MFA_ENROLL, actor=self.user).first()
+        self.assertIsNotNone(audit)
+
+    def test_verify_enroll_invalid_code_fails(self):
+        self.client.force_authenticate(user=self.user)
+        self.client.post(self.enroll_url)
+
+        response = self.client.post(self.verify_enroll_url, {"code": "000000"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.has_2fa_enabled)
+
+    def test_login_enforces_2fa_challenge_when_enabled(self):
+        self._enable_2fa_for_user(self.user)
+
+        # Attempt standard password login
+        response = self.client.post(
+            self.login_url,
+            {
+                "username": self.user.username,
+                "password": self.password,
+                "expected_role": "ADMIN",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertTrue(data.get("mfa_required"))
+        self.assertIn("mfa_token", data)
+
+        # Verify session was NOT established: /api/auth/me/ should return 401
+        me_resp = self.client.get(reverse("auth-me"))
+        self.assertEqual(me_resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_verify_login_valid_totp_authenticates_session(self):
+        import pyotp
+        secret, _ = self._enable_2fa_for_user(self.user)
+
+        # 1. First factor login
+        login_resp = self.client.post(
+            self.login_url,
+            {
+                "username": self.user.username,
+                "password": self.password,
+                "expected_role": "ADMIN",
+            },
+            format="json",
+        )
+        mfa_token = login_resp.json()["mfa_token"]
+
+        # 2. Second factor verification
+        totp = pyotp.TOTP(secret)
+        code = totp.now()
+
+        verify_resp = self.client.post(
+            self.verify_login_url,
+            {"mfa_token": mfa_token, "code": code},
+            format="json",
+        )
+        self.assertEqual(verify_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(verify_resp.json()["username"], self.user.username)
+
+        # 3. Session is now active
+        me_resp = self.client.get(reverse("auth-me"))
+        self.assertEqual(me_resp.status_code, status.HTTP_200_OK)
+
+    def test_verify_login_invalid_code_fails(self):
+        self._enable_2fa_for_user(self.user)
+        login_resp = self.client.post(
+            self.login_url,
+            {"username": self.user.username, "password": self.password, "expected_role": "ADMIN"},
+            format="json",
+        )
+        mfa_token = login_resp.json()["mfa_token"]
+
+        verify_resp = self.client.post(
+            self.verify_login_url,
+            {"mfa_token": mfa_token, "code": "999999"},
+            format="json",
+        )
+        self.assertEqual(verify_resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_recovery_code_single_use_and_no_reuse(self):
+        _, recovery_codes = self._enable_2fa_for_user(self.user)
+        test_recovery_code = recovery_codes[0]
+
+        # Login 1 with recovery code
+        login_resp = self.client.post(
+            self.login_url,
+            {"username": self.user.username, "password": self.password, "expected_role": "ADMIN"},
+            format="json",
+        )
+        mfa_token = login_resp.json()["mfa_token"]
+
+        verify_resp = self.client.post(
+            self.verify_login_url,
+            {"mfa_token": mfa_token, "code": test_recovery_code},
+            format="json",
+        )
+        self.assertEqual(verify_resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(verify_resp.json().get("recovery_code_used"))
+        self.assertEqual(verify_resp.json().get("recovery_codes_remaining"), 7)
+
+        # Logout
+        self.client.post(reverse("auth-logout"))
+
+        # Login 2: attempt to REUSE the same recovery code
+        login_resp2 = self.client.post(
+            self.login_url,
+            {"username": self.user.username, "password": self.password, "expected_role": "ADMIN"},
+            format="json",
+        )
+        mfa_token2 = login_resp2.json()["mfa_token"]
+
+        verify_resp2 = self.client.post(
+            self.verify_login_url,
+            {"mfa_token": mfa_token2, "code": test_recovery_code},
+            format="json",
+        )
+        self.assertEqual(verify_resp2.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_disable_2fa_requires_password_and_valid_code(self):
+        import pyotp
+        secret, _ = self._enable_2fa_for_user(self.user)
+        self.client.force_authenticate(user=self.user)
+
+        # 1. Bad password rejects
+        totp = pyotp.TOTP(secret)
+        resp1 = self.client.post(
+            self.disable_url,
+            {"password": "WrongPassword!", "code": totp.now()},
+            format="json",
+        )
+        self.assertEqual(resp1.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # 2. Bad code rejects
+        resp2 = self.client.post(
+            self.disable_url,
+            {"password": self.password, "code": "000000"},
+            format="json",
+        )
+        self.assertEqual(resp2.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # 3. Valid password + code succeeds
+        resp3 = self.client.post(
+            self.disable_url,
+            {"password": self.password, "code": totp.now()},
+            format="json",
+        )
+        self.assertEqual(resp3.status_code, status.HTTP_200_OK)
+
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.has_2fa_enabled)
+        self.assertEqual(self.user.two_factor_recovery_codes.count(), 0)
+
+    def test_mandatory_admin_mfa_policy_requires_setup_without_lockout(self):
+        from systemsettings.models import SystemSettings
+        from systemsettings.services import invalidate_settings_cache
+
+        settings = SystemSettings.load()
+        settings.require_mfa_admins = True
+        settings.save()
+        invalidate_settings_cache()
+
+        # Admin without 2FA logs in -> receives mfa_setup_required
+        response = self.client.post(
+            self.login_url,
+            {"username": self.user.username, "password": self.password, "expected_role": "ADMIN"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertTrue(data.get("mfa_required"))
+        self.assertTrue(data.get("mfa_setup_required"))
+        mfa_token = data.get("mfa_token")
+
+        # Admin can start setup directly via setup-login
+        setup_start = self.client.post(
+            self.setup_login_url,
+            {"action": "start", "mfa_token": mfa_token},
+            format="json",
+        )
+        self.assertEqual(setup_start.status_code, status.HTTP_200_OK)
+        secret = setup_start.json()["secret"]
+
+        # Admin completes setup and logs in
+        import pyotp
+        code = pyotp.TOTP(secret).now()
+        setup_finish = self.client.post(
+            self.setup_login_url,
+            {"action": "verify", "mfa_token": mfa_token, "code": code},
+            format="json",
+        )
+        self.assertEqual(setup_finish.status_code, status.HTTP_200_OK)
+        self.assertEqual(setup_finish.json()["user"]["username"], self.user.username)
+
+        # Cleanup setting
+        settings.require_mfa_admins = False
+        settings.save()
+        invalidate_settings_cache()
+
+

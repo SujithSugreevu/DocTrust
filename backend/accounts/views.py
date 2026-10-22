@@ -23,6 +23,20 @@ from accounts.serializers import (
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     UserSerializer,
+    TwoFactorVerifyEnrollSerializer,
+    TwoFactorDisableSerializer,
+    TwoFactorLoginVerifySerializer,
+    TwoFactorLoginSetupSerializer,
+)
+from accounts.two_factor_service import (
+    generate_login_challenge_token,
+    verify_login_challenge_token,
+    start_enrollment,
+    verify_enrollment,
+    verify_login_factor,
+    disable_two_factor,
+    is_mfa_required_for_user,
+    get_or_create_two_factor,
 )
 
 
@@ -89,7 +103,33 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Session established only after credentials and expected role match
+        # 1. Two-Factor Authentication enforcement when enabled
+        if user.has_2fa_enabled:
+            mfa_token = generate_login_challenge_token(user, remember_me=remember_me)
+            return Response(
+                {
+                    "mfa_required": True,
+                    "mfa_token": mfa_token,
+                    "method": "totp",
+                    "detail": "Two-factor authentication code required.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # 2. Mandatory Administrator MFA policy check (require_mfa_admins)
+        if is_mfa_required_for_user(user):
+            mfa_token = generate_login_challenge_token(user, remember_me=remember_me)
+            return Response(
+                {
+                    "mfa_required": True,
+                    "mfa_setup_required": True,
+                    "mfa_token": mfa_token,
+                    "detail": "Two-factor authentication is mandatory for administrators. Setup required.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Neither 2FA nor mandatory policy applies: establish authenticated session
         login(request, user)
 
         if remember_me:
@@ -251,3 +291,205 @@ class PasswordResetConfirmView(APIView):
             {"detail": "Password has been reset successfully. You can now log in with your new password."},
             status=status.HTTP_200_OK,
         )
+
+
+class TwoFactorStatusView(APIView):
+    """
+    GET /api/auth/2fa/status/
+    Returns 2FA status, policy requirement, and remaining recovery codes for current user.
+    """
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsActiveUser]
+
+    def get(self, request):
+        two_factor = get_or_create_two_factor(request.user)
+        remaining = request.user.two_factor_recovery_codes.filter(is_used=False).count()
+        return Response({
+            "enabled": two_factor.is_enabled,
+            "enabled_at": two_factor.enabled_at,
+            "mfa_required_by_policy": is_mfa_required_for_user(request.user),
+            "recovery_codes_remaining": remaining,
+        }, status=status.HTTP_200_OK)
+
+
+class TwoFactorEnrollView(APIView):
+    """
+    POST /api/auth/2fa/enroll/
+    Initiates 2FA setup by generating a candidate TOTP secret, provisioning URI, and QR code.
+    Does not activate 2FA until confirmed via verify-enroll.
+    """
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsActiveUser]
+
+    def post(self, request):
+        enforce_csrf(request)
+        try:
+            data = start_enrollment(request.user)
+            return Response(data, status=status.HTTP_200_OK)
+        except ValidationError as err:
+            msg = err.message if hasattr(err, "message") else str(err)
+            return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class TwoFactorVerifyEnrollView(APIView):
+    """
+    POST /api/auth/2fa/verify-enroll/
+    Verifies candidate TOTP code and activates 2FA.
+    Returns 8 single-use recovery codes shown only once.
+    """
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsActiveUser]
+
+    def post(self, request):
+        enforce_csrf(request)
+        serializer = TwoFactorVerifyEnrollSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "Invalid input.", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        code = serializer.validated_data["code"]
+        try:
+            recovery_codes = verify_enrollment(request.user, code, request=request)
+            return Response({
+                "detail": "Two-factor authentication enabled successfully.",
+                "recovery_codes": recovery_codes,
+                "user": UserSerializer(request.user).data,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as err:
+            msg = err.message if hasattr(err, "message") else str(err)
+            return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class TwoFactorDisableView(APIView):
+    """
+    POST /api/auth/2fa/disable/
+    Disables 2FA. Requires verifying current password plus valid TOTP or recovery code.
+    """
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsActiveUser]
+
+    def post(self, request):
+        enforce_csrf(request)
+        serializer = TwoFactorDisableSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "Invalid input.", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        password = serializer.validated_data["password"]
+        code = serializer.validated_data["code"]
+
+        try:
+            disable_two_factor(request.user, password, code, request=request)
+            return Response({
+                "detail": "Two-factor authentication has been disabled.",
+                "user": UserSerializer(request.user).data,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as err:
+            msg = err.message if hasattr(err, "message") else str(err)
+            return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class TwoFactorLoginVerifyView(APIView):
+    """
+    POST /api/auth/2fa/verify-login/
+    Verifies second factor (TOTP or recovery code) using login challenge token.
+    On success, establishes the authenticated Django session.
+    """
+    permission_classes = [AllowAny]
+    throttle_scope = "login"
+
+    def post(self, request):
+        enforce_csrf(request)
+        serializer = TwoFactorLoginVerifySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "Invalid input.", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        mfa_token = serializer.validated_data["mfa_token"]
+        code = serializer.validated_data["code"]
+
+        try:
+            user, remember_me = verify_login_challenge_token(mfa_token)
+            success, method = verify_login_factor(user, code, request=request)
+        except ValidationError as err:
+            msg = err.message if hasattr(err, "message") else str(err)
+            return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.backend = "accounts.backends.EmailOrUsernameBackend"
+        login(request, user)
+
+        if remember_me:
+            request.session.set_expiry(settings.SESSION_COOKIE_AGE)
+        else:
+            request.session.set_expiry(0)
+
+        response_data = UserSerializer(user).data
+        if method == "recovery_code":
+            remaining = user.two_factor_recovery_codes.filter(is_used=False).count()
+            response_data["recovery_code_used"] = True
+            response_data["recovery_codes_remaining"] = remaining
+
+        return Response(response_data, status=status.HTTP_200_OK)
+
+
+class TwoFactorLoginSetupView(APIView):
+    """
+    POST /api/auth/2fa/setup-login/
+    Enables safe enrollment during login when administrator MFA is mandatory by policy.
+    Supports action="start" (returns QR code) and action="verify" (verifies code, activates 2FA, logs in).
+    """
+    permission_classes = [AllowAny]
+    throttle_scope = "login"
+
+    def post(self, request):
+        enforce_csrf(request)
+        action = request.data.get("action", "verify")
+        mfa_token = request.data.get("mfa_token")
+
+        if not mfa_token:
+            return Response({"detail": "Login challenge token is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user, remember_me = verify_login_challenge_token(mfa_token)
+        except ValidationError as err:
+            msg = err.message if hasattr(err, "message") else str(err)
+            return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        if action == "start":
+            try:
+                enroll_data = start_enrollment(user)
+                return Response(enroll_data, status=status.HTTP_200_OK)
+            except ValidationError as err:
+                msg = err.message if hasattr(err, "message") else str(err)
+                return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Default action is verify
+        serializer = TwoFactorLoginSetupSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({"detail": "Invalid input.", "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        code = serializer.validated_data["code"]
+        try:
+            recovery_codes = verify_enrollment(user, code, request=request)
+            user.backend = "accounts.backends.EmailOrUsernameBackend"
+            login(request, user)
+
+            if remember_me:
+                request.session.set_expiry(settings.SESSION_COOKIE_AGE)
+            else:
+                request.session.set_expiry(0)
+
+            return Response({
+                "detail": "Two-factor authentication successfully configured.",
+                "recovery_codes": recovery_codes,
+                "user": UserSerializer(user).data,
+            }, status=status.HTTP_200_OK)
+        except ValidationError as err:
+            msg = err.message if hasattr(err, "message") else str(err)
+            return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)

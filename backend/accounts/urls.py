@@ -10,4 +10,11 @@ urlpatterns = [
     path("admin-check/", views.AdminOnlyCheckView.as_view(), name="auth-admin-check"),
     path("password-reset/", views.PasswordResetRequestView.as_view(), name="auth-password-reset"),
     path("password-reset/confirm/", views.PasswordResetConfirmView.as_view(), name="auth-password-reset-confirm"),
+    # Two-Factor Authentication routes
+    path("2fa/status/", views.TwoFactorStatusView.as_view(), name="auth-2fa-status"),
+    path("2fa/enroll/", views.TwoFactorEnrollView.as_view(), name="auth-2fa-enroll"),
+    path("2fa/verify-enroll/", views.TwoFactorVerifyEnrollView.as_view(), name="auth-2fa-verify-enroll"),
+    path("2fa/disable/", views.TwoFactorDisableView.as_view(), name="auth-2fa-disable"),
+    path("2fa/verify-login/", views.TwoFactorLoginVerifyView.as_view(), name="auth-2fa-verify-login"),
+    path("2fa/setup-login/", views.TwoFactorLoginSetupView.as_view(), name="auth-2fa-setup-login"),
 ]

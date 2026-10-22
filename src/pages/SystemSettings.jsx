@@ -819,7 +819,6 @@ export function SystemSettings() {
                 checked={Boolean(formData.require_mfa_admins)}
                 onChange={(val) => updateField('require_mfa_admins', val)}
                 capability={capabilities?.mfa}
-                warning="MFA enrollment flow is not yet implemented. This toggle is advisory for future release."
               />
 
               <ToggleSwitch

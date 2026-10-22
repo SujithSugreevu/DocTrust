@@ -63,6 +63,7 @@ ALLOWED_METADATA_KEYS = frozenset({
     "maintenance_mode", # Whether maintenance mode is enabled (str: "true"/"false")
     "legal_hold",       # Whether legal hold is enabled (str: "true"/"false")
     "alert_type",       # Type of security alert triggered (str)
+    "mfa_method",       # Method used for 2FA verification (str: "totp"/"recovery_code")
 })
 
 

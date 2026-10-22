@@ -76,9 +76,10 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     """
     Public-safe representation of the authenticated User.
-    Excludes sensitive fields (passwords, tokens, internal permissions).
+    Excludes sensitive fields (passwords, tokens, internal permissions, TOTP secrets).
     """
     display_name = serializers.SerializerMethodField()
+    two_factor_enabled = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -91,9 +92,74 @@ class UserSerializer(serializers.ModelSerializer):
             "status",
             "date_joined",
             "last_login",
+            "two_factor_enabled",
         ]
         read_only_fields = fields
 
     def get_display_name(self, obj):
         full_name = obj.get_full_name()
         return full_name if full_name else obj.username
+
+    def get_two_factor_enabled(self, obj):
+        return obj.has_2fa_enabled
+
+
+class TwoFactorVerifyEnrollSerializer(serializers.Serializer):
+    """Serializer for verifying code during 2FA enrollment."""
+    code = serializers.CharField(
+        required=True,
+        trim_whitespace=True,
+        min_length=6,
+        max_length=16,
+        error_messages={"required": "Verification code is required."}
+    )
+
+
+class TwoFactorDisableSerializer(serializers.Serializer):
+    """Serializer for disabling 2FA requiring password and valid code."""
+    password = serializers.CharField(
+        required=True,
+        write_only=True,
+        style={"input_type": "password"},
+        error_messages={"required": "Current password is required."}
+    )
+    code = serializers.CharField(
+        required=True,
+        trim_whitespace=True,
+        min_length=6,
+        max_length=16,
+        error_messages={"required": "Verification code or recovery code is required."}
+    )
+
+
+class TwoFactorLoginVerifySerializer(serializers.Serializer):
+    """Serializer for verifying second factor during login."""
+    mfa_token = serializers.CharField(
+        required=True,
+        trim_whitespace=True,
+        error_messages={"required": "Login challenge token is required."}
+    )
+    code = serializers.CharField(
+        required=True,
+        trim_whitespace=True,
+        min_length=6,
+        max_length=16,
+        error_messages={"required": "Verification code or recovery code is required."}
+    )
+
+
+class TwoFactorLoginSetupSerializer(serializers.Serializer):
+    """Serializer for completing mandatory 2FA enrollment during login."""
+    mfa_token = serializers.CharField(
+        required=True,
+        trim_whitespace=True,
+        error_messages={"required": "Login challenge token is required."}
+    )
+    code = serializers.CharField(
+        required=True,
+        trim_whitespace=True,
+        min_length=6,
+        max_length=16,
+        error_messages={"required": "Verification code is required."}
+    )
+

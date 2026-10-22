@@ -188,3 +188,122 @@ export async function getCurrentUser() {
     return null
   }
 }
+
+/**
+ * Fetch 2FA status for the current user.
+ */
+export async function getTwoFactorStatus() {
+  const response = await fetch('/api/auth/2fa/status/', {
+    method: 'GET',
+    credentials: 'include',
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.detail || 'Failed to fetch 2FA status.')
+  }
+  return response.json()
+}
+
+/**
+ * Start 2FA enrollment (generates candidate secret, URI, and SVG QR code).
+ */
+export async function enrollTwoFactor() {
+  const csrfToken = await getCsrfToken()
+  const response = await fetch('/api/auth/2fa/enroll/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrfToken,
+    },
+    credentials: 'include',
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.detail || 'Failed to initiate 2FA enrollment.')
+  }
+  return data
+}
+
+/**
+ * Verify candidate code to complete 2FA enrollment.
+ */
+export async function verifyEnrollTwoFactor(code) {
+  const csrfToken = await getCsrfToken()
+  const response = await fetch('/api/auth/2fa/verify-enroll/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrfToken,
+    },
+    credentials: 'include',
+    body: JSON.stringify({ code }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.detail || (data.errors && Object.values(data.errors).flat().join(' ')) || 'Verification failed.')
+  }
+  return data
+}
+
+/**
+ * Disable 2FA requiring current password and valid TOTP / recovery code.
+ */
+export async function disableTwoFactor({ password, code }) {
+  const csrfToken = await getCsrfToken()
+  const response = await fetch('/api/auth/2fa/disable/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrfToken,
+    },
+    credentials: 'include',
+    body: JSON.stringify({ password, code }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.detail || (data.errors && Object.values(data.errors).flat().join(' ')) || 'Failed to disable 2FA.')
+  }
+  return data
+}
+
+/**
+ * Verify 2FA code during login.
+ */
+export async function verifyLoginTwoFactor({ mfaToken, code }) {
+  const csrfToken = await getCsrfToken()
+  const response = await fetch('/api/auth/2fa/verify-login/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrfToken,
+    },
+    credentials: 'include',
+    body: JSON.stringify({ mfa_token: mfaToken, code }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.detail || (data.errors && Object.values(data.errors).flat().join(' ')) || 'Verification failed.')
+  }
+  return data
+}
+
+/**
+ * Setup 2FA during login when mandatory policy applies.
+ */
+export async function setupLoginTwoFactor({ mfaToken, action = 'verify', code = '' }) {
+  const csrfToken = await getCsrfToken()
+  const response = await fetch('/api/auth/2fa/setup-login/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrfToken,
+    },
+    credentials: 'include',
+    body: JSON.stringify({ mfa_token: mfaToken, action, code }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.detail || (data.errors && Object.values(data.errors).flat().join(' ')) || 'Setup failed.')
+  }
+  return data
+}

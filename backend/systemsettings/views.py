@@ -53,8 +53,8 @@ def _build_change_metadata(old_settings, new_settings, changed_field_names):
 # Capability status indicators — accurately reflect what is and is not implemented
 CAPABILITY_STATUS = {
     "mfa": {
-        "available": False,
-        "reason": "MFA authentication flow is not yet implemented.",
+        "available": True,
+        "provider": "Authenticator App TOTP (RFC 6238)",
     },
     "malware_scanning": {
         "available": True,
