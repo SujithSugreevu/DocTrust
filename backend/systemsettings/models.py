@@ -1,0 +1,279 @@
+"""
+Singleton system-settings model for DocTrust.
+
+Stores all administrator-configurable settings in a single PostgreSQL row
+with a CHECK constraint enforcing the singleton pattern (id=1).
+
+Settings are grouped into six logical sections mirroring the frontend:
+1. General Settings (app name, support email, maintenance mode, …)
+2. Authentication & Session Security
+3. File Upload & Storage
+4. Organization Document Security Policies
+5. Retention & Recovery
+6. Audit, Monitoring & Alerts
+"""
+
+from django.core.validators import MinValueValidator, MaxValueValidator, EmailValidator
+from django.db import models
+
+
+class SystemSettings(models.Model):
+    """
+    Singleton system-wide configuration row.
+
+    Access via ``SystemSettings.load()`` which always returns the single
+    instance, creating it with safe defaults on first access.
+    """
+
+    # ── Section 1: General Settings ───────────────────────────────────
+    app_name = models.CharField(
+        max_length=100,
+        default="DocTrust",
+        help_text="Application display name used in branding.",
+    )
+    support_email = models.EmailField(
+        default="support@doctrust.local",
+        help_text="Contact email shown to users and used in notifications.",
+    )
+    security_notifications_enabled = models.BooleanField(
+        default=True,
+        help_text="Enable email notifications for security events (failed logins, permission changes).",
+    )
+    maintenance_mode = models.BooleanField(
+        default=False,
+        help_text="When enabled, non-admin users receive HTTP 503 for protected operations.",
+    )
+
+    # ── Section 2: Authentication & Session Security ──────────────────
+    session_idle_timeout_minutes = models.PositiveIntegerField(
+        default=30,
+        validators=[MinValueValidator(5), MaxValueValidator(1440)],
+        help_text="Session expires after this many idle minutes (5–1440).",
+    )
+    max_session_lifetime_hours = models.PositiveIntegerField(
+        default=24,
+        validators=[MinValueValidator(1), MaxValueValidator(168)],
+        help_text="Absolute session lifetime in hours (1–168).",
+    )
+    min_password_length = models.PositiveIntegerField(
+        default=10,
+        validators=[MinValueValidator(8), MaxValueValidator(128)],
+        help_text="Minimum password length (8–128). Applied via Django password validators.",
+    )
+    require_mfa_admins = models.BooleanField(
+        default=False,
+        help_text="Require MFA for administrator accounts. Currently NOT enforced — MFA flow is not yet implemented.",
+    )
+    require_reauth_sensitive = models.BooleanField(
+        default=True,
+        help_text="Require password re-entry for sensitive operations (e.g. deleting documents, changing settings).",
+    )
+    failed_login_limit = models.PositiveIntegerField(
+        default=5,
+        validators=[MinValueValidator(3), MaxValueValidator(20)],
+        help_text="Lock account after this many consecutive failed logins (3–20).",
+    )
+    lockout_duration_minutes = models.PositiveIntegerField(
+        default=15,
+        validators=[MinValueValidator(1), MaxValueValidator(1440)],
+        help_text="Account lockout duration in minutes after exceeding failed login limit (1–1440).",
+    )
+
+    # ── Section 3: File Upload & Storage ──────────────────────────────
+    allowed_file_types = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of allowed upload file extensions, e.g. [\".pdf\", \".docx\", \".xlsx\", \".pptx\"].",
+    )
+    max_upload_size_mb = models.PositiveIntegerField(
+        default=50,
+        validators=[MinValueValidator(1), MaxValueValidator(500)],
+        help_text="Maximum single file upload size in MB (1–500).",
+    )
+    user_storage_quota_mb = models.PositiveIntegerField(
+        default=500,
+        validators=[MinValueValidator(10), MaxValueValidator(50000)],
+        help_text="Per-user storage quota in MB (10–50000).",
+    )
+    org_storage_limit_mb = models.PositiveIntegerField(
+        default=10000,
+        validators=[MinValueValidator(100), MaxValueValidator(500000)],
+        help_text="Organization-wide storage limit in MB (100–500000).",
+    )
+    storage_warning_threshold_pct = models.PositiveIntegerField(
+        default=80,
+        validators=[MinValueValidator(50), MaxValueValidator(99)],
+        help_text="Percentage of quota usage that triggers a warning (50–99).",
+    )
+    block_executable_uploads = models.BooleanField(
+        default=True,
+        help_text="Block uploads of executable file types (.exe, .bat, .cmd, .sh, etc.).",
+    )
+
+    # ── Section 4: Organization Document Security Policies ────────────
+    class DefaultVisibility(models.TextChoices):
+        PRIVATE = "PRIVATE", "Private"
+        RESTRICTED = "RESTRICTED", "Restricted"
+
+    default_document_visibility = models.CharField(
+        max_length=20,
+        choices=DefaultVisibility.choices,
+        default=DefaultVisibility.PRIVATE,
+        help_text="Default visibility for newly uploaded documents.",
+    )
+    allow_external_sharing = models.BooleanField(
+        default=False,
+        help_text="Allow sharing documents with external recipients outside the organization.",
+    )
+    allow_public_links = models.BooleanField(
+        default=False,
+        help_text="Allow creation of public shareable links for documents.",
+    )
+
+    class DefaultSharePermission(models.TextChoices):
+        VIEW = "VIEW", "View Only"
+        COMMENT = "COMMENT", "Comment"
+        EDIT = "EDIT", "Edit"
+
+    default_share_permission = models.CharField(
+        max_length=20,
+        choices=DefaultSharePermission.choices,
+        default=DefaultSharePermission.VIEW,
+        help_text="Default permission level for newly created shares.",
+    )
+    allow_downloads = models.BooleanField(
+        default=True,
+        help_text="Allow document downloads by authorized recipients.",
+    )
+    allow_printing = models.BooleanField(
+        default=True,
+        help_text="Allow document printing (advisory — cannot be enforced at server level).",
+    )
+    allow_editing = models.BooleanField(
+        default=False,
+        help_text="Allow document editing by authorized recipients by default.",
+    )
+    require_share_expiry = models.BooleanField(
+        default=False,
+        help_text="Require all document shares to have an expiration date.",
+    )
+    max_share_duration_days = models.PositiveIntegerField(
+        default=90,
+        validators=[MinValueValidator(1), MaxValueValidator(365)],
+        help_text="Maximum permitted sharing duration in days (1–365).",
+    )
+    require_transfer_approval = models.BooleanField(
+        default=True,
+        help_text="Require administrator approval for document ownership transfers.",
+    )
+
+    # ── Section 5: Retention & Recovery ───────────────────────────────
+    deleted_recovery_days = models.PositiveIntegerField(
+        default=30,
+        validators=[MinValueValidator(1), MaxValueValidator(365)],
+        help_text="Days that soft-deleted documents remain recoverable (1–365).",
+    )
+    audit_retention_days = models.PositiveIntegerField(
+        default=365,
+        validators=[MinValueValidator(90), MaxValueValidator(3650)],
+        help_text="Audit log retention period in days (90–3650).",
+    )
+    legal_hold_enabled = models.BooleanField(
+        default=False,
+        help_text="When enabled, permanently blocks deletion/purging of all documents.",
+    )
+    auto_permanent_delete = models.BooleanField(
+        default=False,
+        help_text="Automatically purge documents after the recovery period expires.",
+    )
+    deletion_reminder_days = models.PositiveIntegerField(
+        default=7,
+        validators=[MinValueValidator(1), MaxValueValidator(30)],
+        help_text="Days before permanent deletion to send a reminder (1–30).",
+    )
+
+    # ── Section 6: Audit, Monitoring & Alerts ─────────────────────────
+    log_document_access = models.BooleanField(
+        default=True,
+        help_text="Log document view/access events in the audit trail.",
+    )
+    log_permission_changes = models.BooleanField(
+        default=True,
+        help_text="Log permission grant/revoke events.",
+    )
+    log_failed_logins = models.BooleanField(
+        default=True,
+        help_text="Log failed login attempts.",
+    )
+    log_file_downloads = models.BooleanField(
+        default=True,
+        help_text="Log file download events.",
+    )
+    log_admin_actions = models.BooleanField(
+        default=True,
+        help_text="Log administrative actions (user management, settings changes).",
+    )
+    failed_login_alert_threshold = models.PositiveIntegerField(
+        default=5,
+        validators=[MinValueValidator(3), MaxValueValidator(50)],
+        help_text="Number of failed logins before triggering an alert (3–50).",
+    )
+    unusual_download_alert_threshold = models.PositiveIntegerField(
+        default=20,
+        validators=[MinValueValidator(5), MaxValueValidator(200)],
+        help_text="Number of downloads in a short period that triggers an alert (5–200). Detection logic is not yet implemented.",
+    )
+    alert_recipients = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of email addresses that receive security alerts.",
+    )
+    security_notification_method = models.CharField(
+        max_length=20,
+        choices=[("email", "Email"), ("in_app", "In-App"), ("both", "Both")],
+        default="email",
+        help_text="How security notifications are delivered.",
+    )
+
+    # ── Timestamps ────────────────────────────────────────────────────
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "System Settings"
+        verbose_name_plural = "System Settings"
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(id=1),
+                name="singleton_system_settings",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        """Enforce singleton: always save as id=1."""
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """Prevent deletion of the singleton settings row."""
+        raise PermissionError("System settings cannot be deleted.")
+
+    @classmethod
+    def load(cls):
+        """
+        Return the singleton instance, creating it with safe defaults
+        on first access (including default allowed_file_types and alert_recipients).
+        """
+        obj, created = cls.objects.get_or_create(
+            pk=1,
+            defaults={
+                "allowed_file_types": [".pdf", ".docx", ".xlsx", ".pptx"],
+                "alert_recipients": [],
+            },
+        )
+        if created and not obj.allowed_file_types:
+            obj.allowed_file_types = [".pdf", ".docx", ".xlsx", ".pptx"]
+            obj.save(update_fields=["allowed_file_types"])
+        return obj
+
+    def __str__(self):
+        return f"SystemSettings (updated {self.updated_at})"

@@ -179,6 +179,9 @@ def validate_document_upload(file_obj, raw_filename: str) -> tuple[str, str, byt
     """
     Performs comprehensive security and integrity validation on an uploaded file.
 
+    Dynamically reads allowed file types and max upload size from SystemSettings
+    when available, falling back to static defaults.
+
     Returns:
         tuple (file_type, content_type, file_bytes)
 
@@ -188,10 +191,26 @@ def validate_document_upload(file_obj, raw_filename: str) -> tuple[str, str, byt
     if not raw_filename:
         raise ValidationError("Original filename must be provided.")
 
+    # Dynamically load allowed extensions from system settings
+    dynamic_extensions = None
+    try:
+        from systemsettings.services import get_system_settings
+        sys_settings = get_system_settings()
+        if sys_settings.allowed_file_types:
+            dynamic_extensions = set(sys_settings.allowed_file_types)
+    except Exception:
+        pass
+    allowed = dynamic_extensions if dynamic_extensions else ALLOWED_EXTENSIONS
+
     ext = Path(raw_filename).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
+    if ext not in allowed:
         raise ValidationError(
-            f"Unsupported file extension '{ext}'. Allowed extensions: {', '.join(sorted(ALLOWED_EXTENSIONS))}."
+            f"Unsupported file extension '{ext}'. Allowed extensions: {', '.join(sorted(allowed))}."
+        )
+
+    if ext not in EXTENSION_TO_FILE_TYPE:
+        raise ValidationError(
+            f"File type '{ext}' is not yet supported for content validation."
         )
 
     file_type = EXTENSION_TO_FILE_TYPE[ext]
@@ -202,7 +221,19 @@ def validate_document_upload(file_obj, raw_filename: str) -> tuple[str, str, byt
     if not file_bytes:
         raise ValidationError("Uploaded file is empty (0 bytes).")
 
-    max_size = getattr(settings, "MAX_UPLOAD_SIZE_BYTES", 50 * 1024 * 1024)
+    # Dynamically load max upload size from system settings
+    dynamic_max_mb = None
+    try:
+        from systemsettings.services import get_system_settings
+        sys_settings = get_system_settings()
+        dynamic_max_mb = sys_settings.max_upload_size_mb
+    except Exception:
+        pass
+    if dynamic_max_mb:
+        max_size = dynamic_max_mb * 1024 * 1024
+    else:
+        max_size = getattr(settings, "MAX_UPLOAD_SIZE_BYTES", 50 * 1024 * 1024)
+
     if len(file_bytes) > max_size:
         raise ValidationError(
             f"File size ({len(file_bytes)} bytes) exceeds maximum permitted limit ({max_size} bytes)."

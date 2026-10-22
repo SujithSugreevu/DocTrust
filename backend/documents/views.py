@@ -259,7 +259,13 @@ class DocumentListCreateView(APIView):
             )
 
         # ── Quota check ───────────────────────────────────────────────
-        quota_bytes = getattr(settings, "USER_STORAGE_QUOTA_BYTES", 500 * 1024 * 1024)
+        # Dynamically load per-user quota from system settings
+        try:
+            from systemsettings.services import get_system_settings
+            sys_settings = get_system_settings()
+            quota_bytes = sys_settings.user_storage_quota_mb * 1024 * 1024
+        except Exception:
+            quota_bytes = getattr(settings, "USER_STORAGE_QUOTA_BYTES", 500 * 1024 * 1024)
         current_usage = get_user_storage_usage(request.user)
         if current_usage + len(file_bytes) > quota_bytes:
             return Response(
@@ -561,6 +567,18 @@ class DocumentPurgeView(APIView):
         ).first()
         if not doc:
             raise Http404
+
+        # Legal hold enforcement — block all purges when active
+        try:
+            from systemsettings.services import get_system_settings
+            sys_settings = get_system_settings()
+            if sys_settings.legal_hold_enabled:
+                return Response(
+                    {"detail": "Document purging is blocked: a legal hold is currently active."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except Exception:
+            pass  # If settings table isn't available, allow purge (fail-open for this check)
 
         if doc.purged_at is not None:
             return Response(

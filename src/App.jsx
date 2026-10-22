@@ -7,12 +7,13 @@ import AdminDashboard from './pages/AdminDashboard.jsx'
 import UserManagement from './pages/UserManagement.jsx'
 import EmployeePortal from './pages/EmployeePortal.jsx'
 
+import SystemSettings from './pages/SystemSettings.jsx'
+
 import {
   DocumentOverview,
   ActivityLogs,
   PermissionAudit,
   SecurityMonitoring,
-  SystemSettings,
   AdminProfile,
   LogoutPage,
 } from './pages/Additionalpages.jsx'

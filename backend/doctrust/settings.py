@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "accounts",
     "documents",
     "auditlog",
+    "systemsettings",
 ]
 
 MIDDLEWARE = [
@@ -58,6 +59,8 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "systemsettings.middleware.MaintenanceModeMiddleware",
+    "systemsettings.middleware.SessionIdleTimeoutMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]

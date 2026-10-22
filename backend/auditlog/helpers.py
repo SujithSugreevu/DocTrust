@@ -55,6 +55,14 @@ ALLOWED_METADATA_KEYS = frozenset({
     "page_count",       # Operational page count (int)
     "status",           # Operational status code/string (str)
     "reason",           # Controlled operational reason code (str)
+    # System settings audit metadata
+    "changed_fields",   # Comma-separated list of changed setting field names (str)
+    "setting_name",     # Individual setting field name (str)
+    "old_value",        # Previous setting value (str)
+    "new_value",        # Updated setting value (str)
+    "maintenance_mode", # Whether maintenance mode is enabled (str: "true"/"false")
+    "legal_hold",       # Whether legal hold is enabled (str: "true"/"false")
+    "alert_type",       # Type of security alert triggered (str)
 })
 
 

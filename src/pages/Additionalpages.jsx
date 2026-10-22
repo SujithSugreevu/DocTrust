@@ -15,7 +15,6 @@ import {
   Users,
   LogOut,
   Eye,
-  Save,
   X,
   Settings,
 } from 'lucide-react'
@@ -509,62 +508,7 @@ export function SecurityMonitoring() {
   )
 }
 
-export function SystemSettings() {
-  const [settings, setSettings] = useState({
-    notifications: true,
-    maintenance: false,
-    review: true,
-  })
-  const [saved, setSaved] = useState(false)
-
-  const options = [
-    ['notifications', 'Security notifications', 'Show important account event notifications.'],
-    ['maintenance', 'Maintenance mode', 'Demo toggle only; it does not disable real users.'],
-    ['review', 'Require permission review', 'Recommend reviewing sensitive access changes.'],
-  ]
-
-  return (
-    <Shell title="System Settings" subtitle="Configure application preferences">
-      <section className="max-w-3xl rounded-2xl bg-white p-5 shadow-sm">
-        <h2 className="mb-4 text-lg font-bold">General settings</h2>
-
-        <div className="space-y-5">
-          {options.map(([key, title, description]) => (
-            <label key={key} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
-              <span>
-                <span className="block text-sm font-semibold">{title}</span>
-                <span className="mt-1 block text-xs text-slate-500">{description}</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={settings[key]}
-                onChange={(event) => {
-                  setSettings({ ...settings, [key]: event.target.checked })
-                  setSaved(false)
-                }}
-                className="mt-1 size-4 accent-emerald-700"
-              />
-            </label>
-          ))}
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setSaved(true)}
-          className="mt-5 inline-flex items-center gap-2 rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white"
-        >
-          <Save size={16} /> Save demo settings
-        </button>
-
-        {saved && (
-          <p role="status" className="mt-3 text-sm text-emerald-800">
-            Settings saved for this page session.
-          </p>
-        )}
-      </section>
-    </Shell>
-  )
-}
+export { SystemSettings } from './SystemSettings.jsx'
 
 function ProfilePage({ role }) {
   const [name, setName] = useState(

@@ -48,6 +48,11 @@ class AuditEvent(models.Model):
         FOLDER_CREATE = "FOLDER_CREATE", "Folder Created"
         FOLDER_RENAME = "FOLDER_RENAME", "Folder Renamed"
         FOLDER_DELETE = "FOLDER_DELETE", "Folder Deleted"
+        # System settings & Administrative actions
+        SYSTEM_SETTINGS_UPDATE = "SYSTEM_SETTINGS_UPDATE", "System Settings Updated"
+        SYSTEM_SETTINGS_RESET = "SYSTEM_SETTINGS_RESET", "System Settings Reset"
+        MAINTENANCE_MODE_TOGGLE = "MAINTENANCE_MODE_TOGGLE", "Maintenance Mode Toggled"
+        SECURITY_ALERT = "SECURITY_ALERT", "Security Alert Triggered"
 
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
