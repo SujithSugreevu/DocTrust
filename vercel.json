@@ -3,6 +3,14 @@
   "rewrites": [
     {
       "source": "/api/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": {
+            "eq": "doc-trust-one.vercel.app"
+          }
+        }
+      ],
       "destination": "https://doc-trust-backend.vercel.app/api/:path*"
     }
   ]

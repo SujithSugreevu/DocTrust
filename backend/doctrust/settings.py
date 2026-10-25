@@ -24,26 +24,31 @@ load_dotenv(PROJECT_ROOT / ".env")
 DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() in ("true", "1", "yes")
 _INSECURE_DEFAULT_SECRET = "django-insecure-CHANGE-THIS-IN-PRODUCTION"
 _configured_secret = os.environ.get("DJANGO_SECRET_KEY", "").strip()
+PRODUCTION_CONFIGURATION_ERRORS = []
 
 if DEBUG:
     SECRET_KEY = _configured_secret or _INSECURE_DEFAULT_SECRET
-elif not _configured_secret or _configured_secret == _INSECURE_DEFAULT_SECRET:
-    raise ImproperlyConfigured(
-        "DJANGO_SECRET_KEY must be set to a non-default value when DJANGO_DEBUG=False."
-    )
-elif len(_configured_secret) < 50:
-    raise ImproperlyConfigured(
-        "DJANGO_SECRET_KEY must be at least 50 characters when DJANGO_DEBUG=False."
-    )
+    if os.environ.get("VERCEL"):
+        PRODUCTION_CONFIGURATION_ERRORS.append(
+            "DJANGO_DEBUG must be False on Vercel."
+        )
 else:
-    SECRET_KEY = _configured_secret
+    SECRET_KEY = _configured_secret or _INSECURE_DEFAULT_SECRET
+    if not _configured_secret or _configured_secret == _INSECURE_DEFAULT_SECRET:
+        PRODUCTION_CONFIGURATION_ERRORS.append(
+            "DJANGO_SECRET_KEY must be set to a non-default value when DJANGO_DEBUG=False."
+        )
+    elif len(_configured_secret) < 50:
+        PRODUCTION_CONFIGURATION_ERRORS.append(
+            "DJANGO_SECRET_KEY must be at least 50 characters when DJANGO_DEBUG=False."
+        )
 
 FRONTEND_BASE_URL = os.environ.get(
     "FRONTEND_BASE_URL",
     "http://localhost:5173" if DEBUG else "",
 ).strip().rstrip("/")
 if not DEBUG and not FRONTEND_BASE_URL:
-    raise ImproperlyConfigured(
+    PRODUCTION_CONFIGURATION_ERRORS.append(
         "FRONTEND_BASE_URL must be configured when DJANGO_DEBUG=False."
     )
 
@@ -52,9 +57,10 @@ if not _allowed_hosts_raw:
     if DEBUG:
         _allowed_hosts_raw = "localhost,127.0.0.1"
     else:
-        raise ImproperlyConfigured(
+        PRODUCTION_CONFIGURATION_ERRORS.append(
             "DJANGO_ALLOWED_HOSTS must list the production hostnames when DJANGO_DEBUG=False."
         )
+        _allowed_hosts_raw = "localhost,127.0.0.1"
 
 ALLOWED_HOSTS = [
     host.strip()
@@ -62,7 +68,7 @@ ALLOWED_HOSTS = [
     if host.strip()
 ]
 if not DEBUG and "*" in ALLOWED_HOSTS:
-    raise ImproperlyConfigured(
+    PRODUCTION_CONFIGURATION_ERRORS.append(
         "DJANGO_ALLOWED_HOSTS must not contain '*' in production."
     )
 if DEBUG and "testserver" not in ALLOWED_HOSTS:
@@ -88,6 +94,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "doctrust.middleware.ProductionConfigurationMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -158,21 +165,32 @@ def _database_from_url(url):
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or None
 if not DEBUG and not DATABASE_URL:
-    raise ImproperlyConfigured(
+    PRODUCTION_CONFIGURATION_ERRORS.append(
         "DATABASE_URL must be configured when DJANGO_DEBUG=False."
     )
 
-DATABASES = {
-    "default": _database_from_url(DATABASE_URL)
-    if DATABASE_URL
-    else {
+try:
+    _default_database = _database_from_url(DATABASE_URL) if DATABASE_URL else {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": os.environ.get("POSTGRES_DB", "doctrust_db"),
         "USER": os.environ.get("POSTGRES_USER", "doctrust_user"),
         "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
         "HOST": os.environ.get("POSTGRES_HOST", "127.0.0.1"),
         "PORT": os.environ.get("POSTGRES_PORT", "5432"),
-    },
+    }
+except ImproperlyConfigured as exc:
+    PRODUCTION_CONFIGURATION_ERRORS.append(str(exc))
+    _default_database = {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": "doctrust_db",
+        "USER": "doctrust_user",
+        "PASSWORD": "",
+        "HOST": "127.0.0.1",
+        "PORT": "5432",
+    }
+
+DATABASES = {
+    "default": _default_database,
 }
 
 # ── Custom user model ────────────────────────────────────────────────
