@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.utils import timezone
 from accounts.models import User
 
 
@@ -87,9 +88,14 @@ class UserSerializer(serializers.ModelSerializer):
             "id",
             "username",
             "email",
+            "first_name",
+            "last_name",
             "display_name",
             "role",
             "status",
+            "suspended_at",
+            "suspension_end",
+            "suspension_reason",
             "date_joined",
             "last_login",
             "two_factor_enabled",
@@ -102,6 +108,108 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_two_factor_enabled(self, obj):
         return obj.has_2fa_enabled
+
+
+class ProfileUpdateSerializer(serializers.Serializer):
+    """Serializer for updating current user's profile information."""
+    name = serializers.CharField(required=True, allow_blank=False, max_length=150)
+    email = serializers.EmailField(required=True)
+
+    def validate_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("Full name cannot be blank.")
+        return name
+
+    def validate_email(self, value):
+        user = self.context.get("request").user
+        email = value.strip().lower()
+        if User.objects.filter(email__iexact=email).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("An account with this email address already exists.")
+        return email
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    """Serializer for authenticated password change with current password confirmation."""
+    current_password = serializers.CharField(
+        required=True,
+        write_only=True,
+        style={"input_type": "password"},
+        error_messages={"required": "Current password is required."}
+    )
+    new_password = serializers.CharField(
+        required=True,
+        write_only=True,
+        style={"input_type": "password"},
+        min_length=8,
+        error_messages={"required": "New password is required."}
+    )
+    confirm_password = serializers.CharField(
+        required=True,
+        write_only=True,
+        style={"input_type": "password"},
+        error_messages={"required": "Password confirmation is required."}
+    )
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "New passwords do not match."})
+        return attrs
+
+
+class UserSuspendSerializer(serializers.Serializer):
+    """Serializer for administrative user suspension with custom duration and reason."""
+    duration_days = serializers.IntegerField(required=False, min_value=1, max_value=365)
+    duration_hours = serializers.IntegerField(required=False, min_value=1, max_value=8760)
+    suspension_end = serializers.DateTimeField(required=False)
+    reason = serializers.CharField(required=True, allow_blank=False, max_length=1000)
+
+    def validate(self, attrs):
+        duration_fields = ("duration_days", "duration_hours", "suspension_end")
+        supplied_durations = [field for field in duration_fields if field in attrs]
+        if len(supplied_durations) > 1:
+            raise serializers.ValidationError(
+                "Provide no more than one suspension duration."
+            )
+        if attrs.get("suspension_end") and attrs["suspension_end"] <= timezone.now():
+            raise serializers.ValidationError(
+                {"suspension_end": "Suspension expiry must be in the future."}
+            )
+        attrs["reason"] = attrs["reason"].strip()
+        if not attrs["reason"]:
+            raise serializers.ValidationError({"reason": "A suspension reason is required."})
+        return attrs
+
+
+class AdminUserCreateSerializer(serializers.Serializer):
+    """Serializer for administrator creating a new user account."""
+    name = serializers.CharField(required=True, max_length=150)
+    email = serializers.EmailField(required=True)
+    role = serializers.ChoiceField(choices=User.Role.choices, default=User.Role.EMPLOYEE)
+    password = serializers.CharField(required=False, allow_blank=True, min_length=8)
+
+    def validate_email(self, value):
+        email = value.strip().lower()
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError("A user with this email address already exists.")
+        return email
+
+
+class AdminUserUpdateSerializer(serializers.Serializer):
+    """Serializer for administrator editing user details."""
+    name = serializers.CharField(required=False, max_length=150)
+    email = serializers.EmailField(required=False)
+    role = serializers.ChoiceField(choices=User.Role.choices, required=False)
+
+    def validate_email(self, value):
+        user_id = self.context.get("user_id")
+        email = value.strip().lower()
+        qs = User.objects.filter(email__iexact=email)
+        if user_id:
+            qs = qs.exclude(pk=user_id)
+        if qs.exists():
+            raise serializers.ValidationError("A user with this email address already exists.")
+        return email
 
 
 class TwoFactorVerifyEnrollSerializer(serializers.Serializer):
@@ -162,4 +270,3 @@ class TwoFactorLoginSetupSerializer(serializers.Serializer):
         max_length=16,
         error_messages={"required": "Verification code is required."}
     )
-

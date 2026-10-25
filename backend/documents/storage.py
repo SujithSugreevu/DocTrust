@@ -50,8 +50,12 @@ class PrivateDocumentStorage:
 
     def _ensure_directories(self):
         """Ensure storage root and temp directory exist with restrictive permissions."""
-        self.root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.temp_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Windows only honours a limited subset of POSIX modes and can turn a
+        # previously writable directory into a read-only one.  ACLs protect
+        # the private root on Windows; POSIX permissions protect it elsewhere.
+        mode = 0o700 if os.name != "nt" else 0o777
+        self.root_path.mkdir(mode=mode, parents=True, exist_ok=True)
+        self.temp_path.mkdir(mode=mode, parents=True, exist_ok=True)
 
     @staticmethod
     def generate_storage_key() -> str:
@@ -89,7 +93,7 @@ class PrivateDocumentStorage:
         Returns total bytes written.
         """
         target_path = self.get_path(storage_key)
-        target_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target_path.parent.mkdir(mode=0o700 if os.name != "nt" else 0o777, parents=True, exist_ok=True)
 
         # Write to atomic temp file inside shard first, then rename
         tmp_target = target_path.with_suffix(".tmp")
@@ -115,10 +119,8 @@ class PrivateDocumentStorage:
                     raise StorageError("Unsupported stream type for save_stream.")
 
             # Set restrictive permissions (read/write by owner only)
-            try:
+            if os.name != "nt":
                 os.chmod(tmp_target, 0o600)
-            except OSError:
-                pass  # Windows ACLs handle permissions through parent folder
 
             # Atomic replace
             os.replace(tmp_target, target_path)

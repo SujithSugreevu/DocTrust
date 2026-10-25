@@ -1,4 +1,5 @@
 from django.contrib.auth import authenticate, get_user_model
+from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
 from django.test import TestCase, override_settings
@@ -6,15 +7,41 @@ from django.urls import reverse
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient as DRFAPIClient
 
 User = get_user_model()
+
+
+class APIClient(DRFAPIClient):
+    def __init__(self, *args, **kwargs):
+        self.tab_session_key = None
+        super().__init__(*args, **kwargs)
+
+    def request(self, **kwargs):
+        public_paths = {
+            reverse("auth-csrf"),
+            reverse("auth-login"),
+            reverse("auth-password-reset"),
+            reverse("auth-password-reset-confirm"),
+            reverse("auth-2fa-verify-login"),
+            reverse("auth-2fa-setup-login"),
+        }
+        if self.tab_session_key and kwargs.get("PATH_INFO") not in public_paths:
+            kwargs["HTTP_X_DOCTRUST_SESSION"] = self.tab_session_key
+        response = super().request(**kwargs)
+        response_data = getattr(response, "data", {})
+        issued_session_key = response_data.get("tab_session_key")
+        if issued_session_key:
+            self.tab_session_key = issued_session_key
+        if kwargs.get("PATH_INFO") == reverse("auth-logout") and response.status_code == status.HTTP_200_OK:
+            self.tab_session_key = None
+        return response
 
 
 @override_settings(
     REST_FRAMEWORK={
         "DEFAULT_AUTHENTICATION_CLASSES": [
-            "rest_framework.authentication.SessionAuthentication",
+            "accounts.authentication.TabSessionAuthentication",
         ],
         "DEFAULT_PERMISSION_CLASSES": [
             "rest_framework.permissions.IsAuthenticated",
@@ -85,6 +112,79 @@ class AuthenticationTests(TestCase):
         self.assertTrue(bool(response.data["csrfToken"]))
         self.assertIn("csrftoken", self.client.cookies)
         self.assertTrue(bool(self.client.cookies["csrftoken"].value))
+
+    def test_employee_profile_update_persists_and_returns_saved_fields(self):
+        token = self._get_csrf_token()
+        self.client.post(
+            reverse("auth-login"),
+            {
+                "username": "employee_user",
+                "password": self.employee_password,
+                "expected_role": "EMPLOYEE",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        token = self._get_csrf_token()
+        response = self.client.patch(
+            reverse("auth-me"),
+            {
+                "name": "Updated Employee",
+                "email": "updated.employee@doctrust.local",
+                "role": "ADMIN",
+                "status": "SUSPENDED",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["display_name"], "Updated Employee")
+        self.assertEqual(response.data["email"], "updated.employee@doctrust.local")
+        self.employee_user.refresh_from_db()
+        self.assertEqual(self.employee_user.first_name, "Updated")
+        self.assertEqual(self.employee_user.last_name, "Employee")
+        self.assertEqual(self.employee_user.email, "updated.employee@doctrust.local")
+        self.assertEqual(self.employee_user.role, User.Role.EMPLOYEE)
+        self.assertEqual(self.employee_user.status, User.Status.ACTIVE)
+
+        refreshed_profile = self.client.get(reverse("auth-me"))
+        self.assertEqual(refreshed_profile.data["display_name"], "Updated Employee")
+        self.assertEqual(refreshed_profile.data["email"], "updated.employee@doctrust.local")
+
+    def test_employee_profile_update_rejects_duplicate_email(self):
+        token = self._get_csrf_token()
+        self.client.post(
+            reverse("auth-login"),
+            {
+                "username": "employee_user",
+                "password": self.employee_password,
+                "expected_role": "EMPLOYEE",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        token = self._get_csrf_token()
+        response = self.client.patch(
+            reverse("auth-me"),
+            {"name": "Employee User", "email": self.admin_user.email},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.employee_user.refresh_from_db()
+        self.assertEqual(self.employee_user.email, "employee@doctrust.local")
+
+    def test_profile_update_requires_authentication(self):
+        token = self._get_csrf_token()
+        response = self.client.patch(
+            reverse("auth-me"),
+            {"name": "Unauthorized Change", "email": "unauthorized@doctrust.local"},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     # ── Role-Matched Login Tests ──────────────────────────────────────────
 
@@ -232,7 +332,8 @@ class AuthenticationTests(TestCase):
             HTTP_X_CSRFTOKEN=token,
         )
         self.assertEqual(response_no_rem.status_code, status.HTTP_200_OK)
-        self.assertTrue(self.client.session.get_expire_at_browser_close())
+        from django.contrib.sessions.backends.db import SessionStore
+        self.assertTrue(SessionStore(session_key=response_no_rem.data["tab_session_key"]).get_expire_at_browser_close())
 
         token = self._get_csrf_token()
         response_rem = self.client.post(
@@ -247,7 +348,7 @@ class AuthenticationTests(TestCase):
             HTTP_X_CSRFTOKEN=token,
         )
         self.assertEqual(response_rem.status_code, status.HTTP_200_OK)
-        self.assertFalse(self.client.session.get_expire_at_browser_close())
+        self.assertFalse(SessionStore(session_key=response_rem.data["tab_session_key"]).get_expire_at_browser_close())
 
     def test_login_rejects_invalid_password_without_account_enumeration(self):
         token = self._get_csrf_token()
@@ -291,8 +392,9 @@ class AuthenticationTests(TestCase):
             format="json",
             HTTP_X_CSRFTOKEN=token,
         )
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-        self.assertEqual(response.data["detail"], "Invalid credentials or account is inactive.")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(response.data.get("suspended"))
+        self.assertIn("suspended", response.data["detail"].lower())
 
     def test_login_rejects_inactive_account(self):
         token = self._get_csrf_token()
@@ -339,6 +441,57 @@ class AuthenticationTests(TestCase):
         logout_res = self.client.post(reverse("auth-logout"), {}, format="json", HTTP_X_CSRFTOKEN=token)
         self.assertEqual(logout_res.status_code, status.HTTP_200_OK)
         self.assertEqual(self.client.get(reverse("auth-me")).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_sessions_are_tab_scoped_and_logout_does_not_affect_another_tab(self):
+        first_csrf = self._get_csrf_token()
+        first_login = self.client.post(
+            reverse("auth-login"),
+            {
+                "username": "admin_user",
+                "password": self.admin_password,
+                "expected_role": "ADMIN",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=first_csrf,
+        )
+        self.assertEqual(first_login.status_code, status.HTTP_200_OK)
+        first_session_key = first_login.data["tab_session_key"]
+        self.assertNotIn(settings.SESSION_COOKIE_NAME, self.client.cookies)
+
+        second_tab = APIClient(enforce_csrf_checks=True)
+        second_csrf = second_tab.get(reverse("auth-csrf")).data["csrfToken"]
+        second_login = second_tab.post(
+            reverse("auth-login"),
+            {
+                "username": "employee_user",
+                "password": self.employee_password,
+                "expected_role": "EMPLOYEE",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=second_csrf,
+        )
+        self.assertEqual(second_login.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(first_session_key, second_login.data["tab_session_key"])
+        self.assertEqual(self.client.get(reverse("auth-me")).data["role"], "ADMIN")
+        self.assertEqual(second_tab.get(reverse("auth-me")).data["role"], "EMPLOYEE")
+
+        csrf = self._get_csrf_token()
+        logout_response = self.client.post(
+            reverse("auth-logout"),
+            {},
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf,
+        )
+        self.assertEqual(logout_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get(reverse("auth-me")).status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(second_tab.get(reverse("auth-me")).status_code, status.HTTP_200_OK)
+
+        cookie_only_client = DRFAPIClient()
+        cookie_only_client.cookies[settings.SESSION_COOKIE_NAME] = second_login.data["tab_session_key"]
+        self.assertEqual(
+            cookie_only_client.get(reverse("auth-me")).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
 
     def test_admin_only_access_control(self):
         token = self._get_csrf_token()
@@ -424,11 +577,42 @@ class AuthenticationTests(TestCase):
             self.assertEqual(User.objects.filter(username="admin_demo").count(), 1)
             self.assertEqual(User.objects.filter(username="employee_demo").count(), 1)
 
+    def test_seed_admin_mock_data_refuses_when_debug_false(self):
+        from django.core.management import CommandError, call_command
+        with override_settings(DEBUG=False):
+            with self.assertRaises(CommandError) as ctx:
+                call_command("seed_admin_mock_data")
+            self.assertIn("SECURITY GUARD", str(ctx.exception))
+
+    def test_seed_admin_mock_data_creates_and_idempotent(self):
+        from django.core.management import call_command
+        with override_settings(DEBUG=True):
+            call_command("seed_admin_mock_data")
+            # Verify records exist in test DB
+            from documents.models import Document, Folder, DocumentShare
+            from auditlog.models import SecurityAlert
+            demo_usernames = [
+                "sarah.jenkins", "marcus.vance", "elena.rostova", "david.kim",
+                "rachel.green", "carlos.mendez", "priya.sharma", "thomas.wright",
+                "aaliyah.patel", "lucas.moreau", "jessica.taylor", "nathaniel.brooks",
+            ]
+            self.assertEqual(User.objects.filter(username__in=demo_usernames).count(), 12)
+            self.assertEqual(Folder.objects.filter(owner__username__in=demo_usernames).count(), 5)
+            self.assertEqual(Document.objects.filter(owner__username__in=demo_usernames).count(), 15)
+            self.assertEqual(DocumentShare.objects.filter(document__owner__username__in=demo_usernames).count(), 8)
+            self.assertEqual(SecurityAlert.objects.filter(details__startswith="Demonstration notification").count(), 4)
+
+            # Rerun and verify idempotence
+            call_command("seed_admin_mock_data")
+            self.assertEqual(User.objects.filter(username__in=demo_usernames).count(), 12)
+            self.assertEqual(Document.objects.filter(owner__username__in=demo_usernames).count(), 15)
+            self.assertEqual(DocumentShare.objects.filter(document__owner__username__in=demo_usernames).count(), 8)
+
 
 @override_settings(
     REST_FRAMEWORK={
         "DEFAULT_AUTHENTICATION_CLASSES": [
-            "rest_framework.authentication.SessionAuthentication",
+            "accounts.authentication.TabSessionAuthentication",
         ],
         "DEFAULT_PERMISSION_CLASSES": [
             "rest_framework.permissions.IsAuthenticated",
@@ -660,7 +844,7 @@ class PasswordResetTests(TestCase):
 @override_settings(
     REST_FRAMEWORK={
         "DEFAULT_AUTHENTICATION_CLASSES": [
-            "rest_framework.authentication.SessionAuthentication",
+            "accounts.authentication.TabSessionAuthentication",
         ],
         "DEFAULT_PERMISSION_CLASSES": [
             "rest_framework.permissions.IsAuthenticated",
@@ -819,6 +1003,7 @@ class TwoFactorAuthenticationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.json()
         self.assertFalse(data["enabled"])
+        self.assertFalse(data["is_enabled"])
         self.assertEqual(data["recovery_codes_remaining"], 0)
 
     def test_enroll_starts_and_returns_secret_and_qr(self):
@@ -1036,50 +1221,477 @@ class TwoFactorAuthenticationTests(TestCase):
         self.assertFalse(self.user.has_2fa_enabled)
         self.assertEqual(self.user.two_factor_recovery_codes.count(), 0)
 
-    def test_mandatory_admin_mfa_policy_requires_setup_without_lockout(self):
-        from systemsettings.models import SystemSettings
-        from systemsettings.services import invalidate_settings_cache
+    def test_mfa_required_safe_default(self):
+        from accounts.two_factor_service import is_mfa_required_for_user
+        self.assertFalse(is_mfa_required_for_user(self.user))
 
-        settings = SystemSettings.load()
-        settings.require_mfa_admins = True
-        settings.save()
-        invalidate_settings_cache()
 
-        # Admin without 2FA logs in -> receives mfa_setup_required
-        response = self.client.post(
-            self.login_url,
-            {"username": self.user.username, "password": self.password, "expected_role": "ADMIN"},
+
+class AdminManagementAndProfileTests(TestCase):
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        self.timezone = timezone
+        self.timedelta = timedelta
+
+        self.client = APIClient(enforce_csrf_checks=True)
+        self.admin = User.objects.create_user(
+            username="admin_mgr",
+            email="admin_mgr@doctrust.local",
+            password="AdminPassword123!",
+            first_name="Super",
+            last_name="Admin",
+            role=User.Role.ADMIN,
+            status=User.Status.ACTIVE,
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.employee = User.objects.create_user(
+            username="emp_target",
+            email="emp_target@doctrust.local",
+            password="EmployeePassword123!",
+            first_name="Target",
+            last_name="Employee",
+            role=User.Role.EMPLOYEE,
+            status=User.Status.ACTIVE,
+        )
+
+    def _get_csrf_token(self):
+        resp = self.client.get(reverse("auth-csrf"))
+        return resp.data["csrfToken"]
+
+    def _auth_as_admin(self):
+        token = self._get_csrf_token()
+        self.client.post(
+            reverse("auth-login"),
+            {"username": "admin_mgr", "password": "AdminPassword123!", "expected_role": "ADMIN"},
             format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        return self._get_csrf_token()
+
+    def test_admin_suspend_user_custom_duration_and_reason(self):
+        token = self._auth_as_admin()
+        url = reverse("admin-user-suspend", kwargs={"pk": self.employee.id})
+        response = self.client.post(
+            url,
+            {"duration_hours": 48, "reason": "Investigation into abnormal download volume"},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        data = response.json()
-        self.assertTrue(data.get("mfa_required"))
-        self.assertTrue(data.get("mfa_setup_required"))
-        mfa_token = data.get("mfa_token")
+        self.assertEqual(response.data["user"]["status"], User.Status.SUSPENDED)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.status, User.Status.SUSPENDED)
+        self.assertTrue(self.employee.is_currently_suspended)
+        self.assertEqual(self.employee.suspension_reason, "Investigation into abnormal download volume")
+        self.assertIsNotNone(self.employee.suspension_end)
+        self.assertEqual(self.employee.suspended_by, self.admin)
+        from auditlog.models import AuditEvent
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                action=AuditEvent.Action.USER_SUSPEND,
+                target_id=str(self.employee.id),
+                actor=self.admin,
+            ).exists()
+        )
+        listed_employee = self.client.get(
+            reverse("admin-user-list"),
+            {"role": "EMPLOYEE"},
+        ).data["results"][0]
+        self.assertEqual(listed_employee["status"], User.Status.SUSPENDED)
 
-        # Admin can start setup directly via setup-login
-        setup_start = self.client.post(
-            self.setup_login_url,
-            {"action": "start", "mfa_token": mfa_token},
+        repeated_response = self.client.post(
+            url,
+            {"duration_hours": 48, "reason": "Repeated request"},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(repeated_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            AuditEvent.objects.filter(
+                action=AuditEvent.Action.USER_SUSPEND,
+                target_id=str(self.employee.id),
+            ).count(),
+            1,
+        )
+
+    def test_admin_unsuspend_user_early(self):
+        token = self._auth_as_admin()
+        # First suspend
+        self.employee.status = User.Status.SUSPENDED
+        self.employee.suspension_end = self.timezone.now() + self.timedelta(hours=24)
+        self.employee.suspension_reason = "Temporary hold"
+        self.employee.save()
+
+        url = reverse("admin-user-unsuspend", kwargs={"pk": self.employee.id})
+        response = self.client.post(url, {}, format="json", HTTP_X_CSRFTOKEN=token)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.status, User.Status.ACTIVE)
+        self.assertFalse(self.employee.is_currently_suspended)
+        from auditlog.models import AuditEvent
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                action=AuditEvent.Action.USER_ACTIVATE,
+                target_id=str(self.employee.id),
+                metadata__reason="administrative_reactivation",
+            ).exists()
+        )
+        self.assertIsNone(self.employee.suspension_end)
+        self.assertFalse(self.employee.suspension_reason)
+
+    def test_indefinite_suspension_revokes_sessions_until_employee_logs_in_again(self):
+        employee_client = APIClient(enforce_csrf_checks=True)
+        employee_csrf = employee_client.get(reverse("auth-csrf")).data["csrfToken"]
+        login_response = employee_client.post(
+            reverse("auth-login"),
+            {
+                "username": "emp_target",
+                "password": "EmployeePassword123!",
+                "expected_role": "EMPLOYEE",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=employee_csrf,
+        )
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(employee_client.get(reverse("auth-me")).status_code, status.HTTP_200_OK)
+
+        admin_token = self._auth_as_admin()
+        suspend_url = reverse("admin-user-suspend", kwargs={"pk": self.employee.id})
+        suspend_response = self.client.post(
+            suspend_url,
+            {"reason": "Manual review"},
+            format="json",
+            HTTP_X_CSRFTOKEN=admin_token,
+        )
+        self.assertEqual(suspend_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(suspend_response.data["user"]["status"], User.Status.SUSPENDED)
+        self.assertIsNone(suspend_response.data["user"]["suspension_end"])
+
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.status, User.Status.SUSPENDED)
+        self.assertIsNone(self.employee.suspension_end)
+        self.assertEqual(employee_client.get(reverse("auth-me")).status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(
+            employee_client.get(reverse("document-list-create")).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+        self.assertEqual(
+            self.client.get(reverse("admin-user-list")).status_code,
+            status.HTTP_200_OK,
+        )
+
+        relogin_csrf = employee_client.get(reverse("auth-csrf")).data["csrfToken"]
+        rejected_login = employee_client.post(
+            reverse("auth-login"),
+            {
+                "username": "emp_target",
+                "password": "EmployeePassword123!",
+                "expected_role": "EMPLOYEE",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=relogin_csrf,
+        )
+        self.assertEqual(rejected_login.status_code, status.HTTP_403_FORBIDDEN)
+
+        unsuspend_response = self.client.post(
+            reverse("admin-user-unsuspend", kwargs={"pk": self.employee.id}),
+            {},
+            format="json",
+            HTTP_X_CSRFTOKEN=admin_token,
+        )
+        self.assertEqual(unsuspend_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(unsuspend_response.data["user"]["status"], User.Status.ACTIVE)
+        self.assertEqual(employee_client.get(reverse("auth-me")).status_code, status.HTTP_401_UNAUTHORIZED)
+
+        relogin_csrf = employee_client.get(reverse("auth-csrf")).data["csrfToken"]
+        successful_login = employee_client.post(
+            reverse("auth-login"),
+            {
+                "username": "emp_target",
+                "password": "EmployeePassword123!",
+                "expected_role": "EMPLOYEE",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=relogin_csrf,
+        )
+        self.assertEqual(successful_login.status_code, status.HTTP_200_OK)
+        self.assertEqual(successful_login.data["role"], User.Role.EMPLOYEE)
+
+    def test_suspension_auto_expiry_allows_login(self):
+        # Set user as suspended with expiration 1 hour in the past
+        self.employee.status = User.Status.SUSPENDED
+        self.employee.suspension_end = self.timezone.now() - self.timedelta(hours=1)
+        self.employee.suspension_reason = "Past suspension"
+        self.employee.save()
+
+        # Attempting login should auto-expire the suspension and succeed
+        token = self._get_csrf_token()
+        response = self.client.post(
+            reverse("auth-login"),
+            {"username": "emp_target", "password": "EmployeePassword123!", "expected_role": "EMPLOYEE"},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.status, User.Status.ACTIVE)
+        self.assertFalse(self.employee.is_currently_suspended)
+        from auditlog.models import AuditEvent
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                action=AuditEvent.Action.USER_ACTIVATE,
+                target_id=str(self.employee.id),
+                metadata__reason="automatic_suspension_expiry",
+            ).exists()
+        )
+
+    def test_authenticate_rejects_suspended_account(self):
+        self.employee.status = User.Status.SUSPENDED
+        self.employee.save(update_fields=["status"])
+
+        self.assertIsNone(
+            authenticate(
+                username="emp_target",
+                password="EmployeePassword123!",
+            )
+        )
+
+    def test_admin_cannot_suspend_themselves(self):
+        token = self._auth_as_admin()
+        url = reverse("admin-user-suspend", kwargs={"pk": self.admin.id})
+        response = self.client.post(
+            url,
+            {"duration_hours": 24, "reason": "Self suspension test"},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_admin_cannot_suspend_another_administrator(self):
+        other_admin = User.objects.create_user(
+            username="other_admin",
+            email="other_admin@doctrust.local",
+            password="OtherAdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.Status.ACTIVE,
+        )
+        token = self._auth_as_admin()
+        response = self.client.post(
+            reverse("admin-user-suspend", kwargs={"pk": other_admin.id}),
+            {"duration_hours": 24, "reason": "Employee-only action test"},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        other_admin.refresh_from_db()
+        self.assertEqual(other_admin.status, User.Status.ACTIVE)
+
+    def test_admin_cannot_reactivate_an_administrator_through_employee_action(self):
+        other_admin = User.objects.create_user(
+            username="suspended_admin",
+            email="suspended_admin@doctrust.local",
+            password="SuspendedAdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.Status.SUSPENDED,
+            suspension_reason="Separate administrator workflow",
+        )
+        token = self._auth_as_admin()
+
+        response = self.client.post(
+            reverse("admin-user-unsuspend", kwargs={"pk": other_admin.id}),
+            {},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        other_admin.refresh_from_db()
+        self.assertEqual(other_admin.status, User.Status.SUSPENDED)
+
+    def test_suspension_blocks_an_existing_authenticated_session(self):
+        employee_client = APIClient(enforce_csrf_checks=True)
+        csrf_token = employee_client.get(reverse("auth-csrf")).data["csrfToken"]
+        login_response = employee_client.post(
+            reverse("auth-login"),
+            {
+                "username": "emp_target",
+                "password": "EmployeePassword123!",
+                "expected_role": "EMPLOYEE",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+
+        admin_token = self._auth_as_admin()
+        suspend_response = self.client.post(
+            reverse("admin-user-suspend", kwargs={"pk": self.employee.id}),
+            {"duration_hours": 24, "reason": "Access review"},
+            format="json",
+            HTTP_X_CSRFTOKEN=admin_token,
+        )
+        self.assertEqual(suspend_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(employee_client.get(reverse("auth-me")).status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(
+            employee_client.get(reverse("document-list-create")).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+        new_employee_client = APIClient(enforce_csrf_checks=True)
+        new_csrf_token = new_employee_client.get(reverse("auth-csrf")).data["csrfToken"]
+        login_response = new_employee_client.post(
+            reverse("auth-login"),
+            {
+                "username": "emp_target",
+                "password": "EmployeePassword123!",
+                "expected_role": "EMPLOYEE",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=new_csrf_token,
+        )
+        self.assertEqual(login_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_cannot_suspend_an_account(self):
+        self.client.force_authenticate(user=self.employee)
+        response = self.client.post(
+            reverse("admin-user-suspend", kwargs={"pk": self.admin.id}),
+            {"duration_hours": 24, "reason": "Not authorized"},
             format="json",
         )
-        self.assertEqual(setup_start.status_code, status.HTTP_200_OK)
-        secret = setup_start.json()["secret"]
-
-        # Admin completes setup and logs in
-        import pyotp
-        code = pyotp.TOTP(secret).now()
-        setup_finish = self.client.post(
-            self.setup_login_url,
-            {"action": "verify", "mfa_token": mfa_token, "code": code},
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        unsuspend_response = self.client.post(
+            reverse("admin-user-unsuspend", kwargs={"pk": self.employee.id}),
+            {},
             format="json",
         )
-        self.assertEqual(setup_finish.status_code, status.HTTP_200_OK)
-        self.assertEqual(setup_finish.json()["user"]["username"], self.user.username)
+        self.assertEqual(unsuspend_response.status_code, status.HTTP_403_FORBIDDEN)
 
-        # Cleanup setting
-        settings.require_mfa_admins = False
-        settings.save()
-        invalidate_settings_cache()
+    def test_suspension_requires_valid_duration_and_reason(self):
+        token = self._auth_as_admin()
+        response = self.client.post(
+            reverse("admin-user-suspend", kwargs={"pk": self.employee.id}),
+            {"duration_hours": 0, "reason": " "},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.status, User.Status.ACTIVE)
 
+    def test_admin_user_list_separates_roles_and_supports_search(self):
+        User.objects.create_user(
+            username="second_admin",
+            email="second_admin@doctrust.local",
+            password="AdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.Status.ACTIVE,
+        )
+        self._auth_as_admin()
 
+        admins = self.client.get(reverse("admin-user-list"), {"role": "ADMIN", "page_size": 8})
+        employees = self.client.get(
+            reverse("admin-user-list"),
+            {"role": "EMPLOYEE", "search": "Target", "page_size": 8},
+        )
+        self.assertEqual(admins.status_code, status.HTTP_200_OK)
+        self.assertEqual(admins.data["total"], 2)
+        self.assertTrue(all(user["role"] == User.Role.ADMIN for user in admins.data["results"]))
+        self.assertEqual(employees.status_code, status.HTTP_200_OK)
+        self.assertEqual(employees.data["total"], 1)
+        self.assertEqual(employees.data["results"][0]["username"], self.employee.username)
+
+    def test_admin_login_session_authorizes_user_management_list(self):
+        csrf_token = self._get_csrf_token()
+        login_response = self.client.post(
+            reverse("auth-login"),
+            {
+                "username": "admin_mgr",
+                "password": "AdminPassword123!",
+                "expected_role": "ADMIN",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+        self.assertIn("tab_session_key", login_response.data)
+        self.assertNotIn(settings.SESSION_COOKIE_NAME, self.client.cookies)
+
+        user_list_response = self.client.get(
+            reverse("admin-user-list"),
+            {"role": "ADMIN", "page": 1, "pageSize": 8},
+        )
+        self.assertEqual(user_list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(user_list_response.data["total"], 1)
+        user_data = user_list_response.data["results"][0]
+        self.assertEqual(user_data["id"], self.admin.id)
+        self.assertEqual(user_data["role"], User.Role.ADMIN)
+        self.assertIn("status", user_data)
+        self.assertIsNotNone(user_data["last_login"])
+
+        unauthenticated_client = APIClient(enforce_csrf_checks=True)
+        unauthenticated_response = unauthenticated_client.get(reverse("admin-user-list"))
+        self.assertEqual(unauthenticated_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_profile_update_via_patch_me(self):
+        token = self._auth_as_admin()
+        response = self.client.patch(
+            reverse("auth-me"),
+            {"name": "Alexander Pierce", "email": "alex.pierce@doctrust.local"},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.first_name, "Alexander")
+        self.assertEqual(self.admin.last_name, "Pierce")
+        self.assertEqual(self.admin.email, "alex.pierce@doctrust.local")
+
+    def test_password_change_flow(self):
+        token = self._auth_as_admin()
+        url = reverse("auth-password-change")
+
+        # 1. Incorrect current password rejected
+        bad_resp = self.client.post(
+            url,
+            {
+                "current_password": "WrongPassword123!",
+                "new_password": "NewSecurePassword456!",
+                "confirm_password": "NewSecurePassword456!",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(bad_resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # 2. Mismatched confirmation rejected
+        token = self._get_csrf_token()
+        mismatch_resp = self.client.post(
+            url,
+            {
+                "current_password": "AdminPassword123!",
+                "new_password": "NewSecurePassword456!",
+                "confirm_password": "DifferentPassword456!",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(mismatch_resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # 3. Valid change succeeds
+        token = self._get_csrf_token()
+        good_resp = self.client.post(
+            url,
+            {
+                "current_password": "AdminPassword123!",
+                "new_password": "NewSecurePassword456!",
+                "confirm_password": "NewSecurePassword456!",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(good_resp.status_code, status.HTTP_200_OK)
+
+        # Verify old password no longer works and new password works
+        self.admin.refresh_from_db()
+        self.assertFalse(self.admin.check_password("AdminPassword123!"))
+        self.assertTrue(self.admin.check_password("NewSecurePassword456!"))

@@ -15,10 +15,11 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
+from accounts.authentication import create_tab_session
 from auditlog.models import AuditEvent
-from documents.models import Document, Folder
+from documents.models import Document, DocumentShare, EmployeeNotification, Folder
 
 User = get_user_model()
 
@@ -604,6 +605,67 @@ class DocumentAPITests(APITestCase):
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(str(res.data["folder"]), str(self.folder.id))
+        doc.refresh_from_db()
+        self.assertEqual(doc.folder_id, self.folder.id)
+
+    def test_session_csrf_protects_employee_move_and_upload(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from unittest.mock import patch as mock_patch
+
+        client = APIClient(enforce_csrf_checks=True)
+        self.employee.backend = "accounts.backends.EmailOrUsernameBackend"
+        client.credentials(
+            HTTP_X_DOCTRUST_SESSION=create_tab_session(self.employee, remember_me=True),
+        )
+        csrf_response = client.get("/api/auth/csrf/")
+        csrf_token = csrf_response.data["csrfToken"]
+        document = self._create_document(self.employee)
+        destination = Folder.objects.create(name="Destination", owner=self.employee)
+        move_url = f"/api/documents/{document.id}/"
+
+        missing_token_response = client.patch(
+            move_url,
+            {"folder": str(destination.id)},
+            format="json",
+        )
+        self.assertEqual(missing_token_response.status_code, status.HTTP_403_FORBIDDEN)
+
+        move_response = client.patch(
+            move_url,
+            {"folder": str(destination.id)},
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+        self.assertEqual(move_response.status_code, status.HTTP_200_OK, move_response.data)
+        document.refresh_from_db()
+        self.assertEqual(document.folder_id, destination.id)
+
+        uploaded_file = SimpleUploadedFile(
+            "csrf-report.pdf",
+            self.SAFE_PDF_BYTES,
+            content_type="application/pdf",
+        )
+        with mock_patch("documents.views.PrivateDocumentStorage") as MockStorage:
+            storage = MockStorage.return_value
+            storage.generate_storage_key.return_value = "c" * 64
+            storage.save_stream.return_value = len(self.SAFE_PDF_BYTES)
+            upload_response = client.post(
+                "/api/documents/",
+                {"file": uploaded_file, "folder": str(destination.id)},
+                format="multipart",
+                HTTP_X_CSRFTOKEN=csrf_token,
+            )
+
+        self.assertEqual(upload_response.status_code, status.HTTP_201_CREATED, upload_response.data)
+        uploaded_document = Document.objects.get(pk=upload_response.data["id"])
+        self.assertEqual(uploaded_document.folder_id, destination.id)
+        delete_response = client.delete(
+            f"/api/documents/{uploaded_document.id}/delete/",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+        self.assertEqual(delete_response.status_code, status.HTTP_204_NO_CONTENT)
+        uploaded_document.refresh_from_db()
+        self.assertEqual(uploaded_document.status, Document.Status.DELETED)
 
     def test_patch_document_cross_owner_folder_rejected(self):
         other_folder = Folder.objects.create(name="Other Folder", owner=self.employee2)
@@ -838,6 +900,27 @@ class DocumentAPITests(APITestCase):
         self.assertNotIn("storage_key", res.data)
         self.assertTrue(Document.objects.filter(name="Annual Report").exists())
 
+    def test_upload_persists_selected_folder(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from unittest.mock import patch as mock_patch
+        self.client.force_authenticate(user=self.employee)
+        fake = SimpleUploadedFile("report.pdf", self.SAFE_PDF_BYTES, content_type="application/pdf")
+
+        with mock_patch("documents.views.PrivateDocumentStorage") as MockStorage:
+            mock_instance = MockStorage.return_value
+            mock_instance.generate_storage_key.return_value = "b" * 64
+            mock_instance.save_stream.return_value = len(self.SAFE_PDF_BYTES)
+
+            res = self.client.post(
+                "/api/documents/",
+                {"file": fake, "folder": str(self.folder.id)},
+                format="multipart",
+            )
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        document = Document.objects.get(pk=res.data["id"])
+        self.assertEqual(document.folder_id, self.folder.id)
+
     def test_upload_generates_audit_event(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
         from unittest.mock import patch as mock_patch
@@ -854,3 +937,161 @@ class DocumentAPITests(APITestCase):
 
         post_count = AuditEvent.objects.filter(actor=self.employee, action="DOCUMENT_UPLOAD").count()
         self.assertEqual(post_count, pre_count + 1)
+
+
+class DocumentShareAPITests(APITestCase):
+    """Regression coverage for recipient-only access to an owner-managed share."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username="share_owner", email="share_owner@example.com", password="SecurePassword123!", role=User.Role.EMPLOYEE, status=User.Status.ACTIVE)
+        self.recipient = User.objects.create_user(username="share_recipient", email="share_recipient@example.com", password="SecurePassword123!", role=User.Role.EMPLOYEE, status=User.Status.ACTIVE)
+        self.outsider = User.objects.create_user(username="share_outsider", email="share_outsider@example.com", password="SecurePassword123!", role=User.Role.EMPLOYEE, status=User.Status.ACTIVE)
+        self.document = Document.objects.create(
+            owner=self.owner, name="shared.pdf", original_filename="shared.pdf", description="Shared document",
+            file_type=Document.FileType.PDF, size=100, sha256="c" * 64, storage_key=uuid.uuid4().hex + uuid.uuid4().hex,
+        )
+
+    def test_owner_can_grant_recipient_and_recipient_can_list_shared_document(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(f"/api/documents/{self.document.id}/shares/", {"recipient": self.recipient.id, "permission": "VIEW"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertTrue(DocumentShare.objects.filter(document=self.document, recipient=self.recipient).exists())
+        self.client.force_authenticate(user=self.recipient)
+        received = self.client.get("/api/documents/shared/")
+        self.assertEqual(received.status_code, status.HTTP_200_OK)
+        self.assertEqual(received.data["count"], 1)
+        self.assertEqual(received.data["results"][0]["permission"], "VIEW")
+        shares_resp = self.client.get(f"/api/documents/{self.document.id}/shares/")
+        self.assertEqual(shares_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(shares_resp.data), 1)
+
+    def test_outsider_cannot_access_shared_document(self):
+        DocumentShare.objects.create(document=self.document, recipient=self.recipient, permission=DocumentShare.Permission.VIEW)
+        self.client.force_authenticate(user=self.outsider)
+        self.assertEqual(self.client.get(f"/api/documents/{self.document.id}/").status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self.client.get(f"/api/documents/{self.document.id}/shares/").status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_view_share_allows_preview_but_not_download(self):
+        from io import BytesIO
+        from unittest.mock import patch as mock_patch
+
+        DocumentShare.objects.create(
+            document=self.document,
+            recipient=self.recipient,
+            permission=DocumentShare.Permission.VIEW,
+        )
+        self.client.force_authenticate(user=self.recipient)
+        with mock_patch("documents.views.PrivateDocumentStorage") as storage_class:
+            storage_class.return_value.exists.return_value = True
+            storage_class.return_value.open.return_value = BytesIO(b"test")
+            self.assertEqual(
+                self.client.get(f"/api/documents/{self.document.id}/view/").status_code,
+                status.HTTP_200_OK,
+            )
+            self.assertEqual(
+                self.client.get(f"/api/documents/{self.document.id}/download/").status_code,
+                status.HTTP_404_NOT_FOUND,
+            )
+
+    def test_download_share_can_download(self):
+        from io import BytesIO
+        from unittest.mock import patch as mock_patch
+
+        DocumentShare.objects.create(
+            document=self.document,
+            recipient=self.recipient,
+            permission=DocumentShare.Permission.DOWNLOAD,
+        )
+        self.client.force_authenticate(user=self.recipient)
+        with mock_patch("documents.views.PrivateDocumentStorage") as storage_class:
+            storage_class.return_value.exists.return_value = True
+            storage_class.return_value.open.return_value = BytesIO(b"test")
+            response = self.client.get(f"/api/documents/{self.document.id}/download/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_owner_can_revoke_share(self):
+        share = DocumentShare.objects.create(document=self.document, recipient=self.recipient, permission=DocumentShare.Permission.EDIT)
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.delete(f"/api/documents/{self.document.id}/shares/{share.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(DocumentShare.objects.filter(pk=share.pk).exists())
+
+    def test_legacy_self_share_is_not_reported_as_received_or_outgoing(self):
+        """A legacy self-share must not inflate employee sharing metrics."""
+        DocumentShare.objects.create(
+            document=self.document,
+            recipient=self.owner,
+            permission=DocumentShare.Permission.VIEW,
+        )
+        self.client.force_authenticate(user=self.owner)
+        received = self.client.get("/api/documents/shared/")
+        outgoing = self.client.get(f"/api/documents/{self.document.id}/shares/")
+        self.assertEqual(received.status_code, status.HTTP_200_OK)
+        self.assertEqual(received.data["count"], 0)
+        self.assertEqual(outgoing.status_code, status.HTTP_200_OK)
+        self.assertEqual(outgoing.data, [])
+
+    def test_owner_share_summary_returns_all_outgoing_grants_in_one_request(self):
+        """The Employee workspace avoids one request per owned document."""
+        visible_share = DocumentShare.objects.create(
+            document=self.document,
+            recipient=self.recipient,
+            permission=DocumentShare.Permission.DOWNLOAD,
+        )
+        DocumentShare.objects.create(
+            document=self.document,
+            recipient=self.owner,
+            permission=DocumentShare.Permission.VIEW,
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.get("/api/documents/owned-shares/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], visible_share.id)
+        self.assertEqual(str(response.data[0]["document"]), str(self.document.id))
+        self.assertEqual(response.data[0]["recipient"], self.recipient.id)
+
+    def test_storage_usage_is_private_to_current_employee(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.get("/api/documents/storage/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["used_bytes"], 100)
+
+
+class EmployeeNotificationAPITests(APITestCase):
+    """Employee inbox records are private and their read state persists."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username="notice_owner", email="notice_owner@example.com", password="SecurePassword123!", role=User.Role.EMPLOYEE, status=User.Status.ACTIVE)
+        self.recipient = User.objects.create_user(username="notice_recipient", email="notice_recipient@example.com", password="SecurePassword123!", role=User.Role.EMPLOYEE, status=User.Status.ACTIVE)
+        self.outsider = User.objects.create_user(username="notice_outsider", email="notice_outsider@example.com", password="SecurePassword123!", role=User.Role.EMPLOYEE, status=User.Status.ACTIVE)
+        self.document = Document.objects.create(
+            owner=self.owner, name="notification.pdf", original_filename="notification.pdf", description="Notification test",
+            file_type=Document.FileType.PDF, size=100, sha256="d" * 64, storage_key=uuid.uuid4().hex + uuid.uuid4().hex,
+        )
+
+    def test_sharing_creates_a_persisted_recipient_notification(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(f"/api/documents/{self.document.id}/shares/", {"recipient": self.recipient.id, "permission": "VIEW"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        notification = EmployeeNotification.objects.get(recipient=self.recipient, document=self.document)
+        self.assertFalse(notification.is_read)
+
+        self.client.force_authenticate(user=self.recipient)
+        inbox = self.client.get("/api/documents/notifications/")
+        self.assertEqual(inbox.status_code, status.HTTP_200_OK)
+        self.assertEqual(inbox.data["results"][0]["id"], notification.id)
+        read = self.client.post(f"/api/documents/notifications/{notification.id}/read/")
+        self.assertEqual(read.status_code, status.HTTP_200_OK)
+        notification.refresh_from_db()
+        self.assertTrue(notification.is_read)
+        self.assertIsNotNone(notification.read_at)
+
+    def test_employee_cannot_read_another_employee_notification(self):
+        notification = EmployeeNotification.objects.create(
+            recipient=self.recipient, document=self.document, event_key="test:private-notice", message="Private notification",
+        )
+        self.client.force_authenticate(user=self.outsider)
+        self.assertEqual(self.client.post(f"/api/documents/notifications/{notification.id}/read/").status_code, status.HTTP_404_NOT_FOUND)

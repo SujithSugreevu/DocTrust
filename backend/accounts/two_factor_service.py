@@ -308,7 +308,13 @@ def disable_two_factor(user: User, password: str, code: str, request=None) -> bo
     """
     Disable 2FA for an authenticated user.
     Requires verifying the user's password PLUS a valid TOTP code or recovery code.
+    Respects mandatory MFA policy (cannot disable if policy requires it).
     """
+    if is_mfa_required_for_user(user):
+        raise ValidationError(
+            "Two-factor authentication is mandatory for administrators under organization policy and cannot be disabled."
+        )
+
     if not user.check_password(password):
         raise ValidationError("Incorrect password.")
 
@@ -325,6 +331,7 @@ def disable_two_factor(user: User, password: str, code: str, request=None) -> bo
     two_factor.secret = ""
     two_factor.pending_secret = ""
     two_factor.pending_created_at = None
+    two_factor.enabled_at = None
     two_factor.last_verified_counter = 0
     two_factor.failed_attempts = 0
     two_factor.lockout_until = None
@@ -348,14 +355,7 @@ def disable_two_factor(user: User, password: str, code: str, request=None) -> bo
 def is_mfa_required_for_user(user: User) -> bool:
     """
     Check if MFA is mandatory for this user by organization system policy.
-    Checks `require_mfa_admins` in SystemSettings.
+    The configurable require_mfa_admins setting has been removed; safe default is False.
     """
-    if not user.is_admin_role:
-        return False
+    return False
 
-    try:
-        from systemsettings.services import get_system_settings
-        sys_settings = get_system_settings()
-        return bool(sys_settings.require_mfa_admins)
-    except Exception:
-        return False

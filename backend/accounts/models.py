@@ -1,5 +1,5 @@
 from django.contrib.auth.models import AbstractUser
-from django.db import models
+from django.db import models, transaction
 
 
 class User(AbstractUser):
@@ -29,8 +29,64 @@ class User(AbstractUser):
         default=Status.ACTIVE,
         help_text="Account status (Active/Suspended).",
     )
+    suspended_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the user account was suspended.",
+    )
+    suspension_end = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the user account suspension expires.",
+    )
+    suspension_reason = models.TextField(
+        blank=True,
+        default="",
+        help_text="Administrative justification for the account suspension.",
+    )
+    suspended_by = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="suspended_users",
+        help_text="Administrator who initiated the suspension.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def check_and_update_suspension(self):
+        """
+        Check if account is currently suspended and whether the suspension has expired.
+        If suspension_end is reached or passed, automatically unsuspend and record audit event.
+        Returns True if the user remains suspended, False if active.
+        """
+        if self.status == self.Status.SUSPENDED:
+            if self.suspension_end:
+                from django.utils import timezone
+                if timezone.now() >= self.suspension_end:
+                    with transaction.atomic():
+                        self.status = self.Status.ACTIVE
+                        self.suspended_at = None
+                        self.suspension_end = None
+                        self.suspension_reason = ""
+                        self.suspended_by = None
+                        self.save(update_fields=["status", "suspended_at", "suspension_end", "suspension_reason", "suspended_by"])
+                        from auditlog.helpers import log_event
+                        from auditlog.models import AuditEvent
+                        log_event(
+                            actor=None,
+                            action=AuditEvent.Action.USER_ACTIVATE,
+                            target=self,
+                            metadata={"reason": "automatic_suspension_expiry"},
+                        )
+                    return False
+            return True
+        return False
+
+    @property
+    def is_currently_suspended(self):
+        return self.check_and_update_suspension()
 
     @property
     def is_admin_role(self):
@@ -140,4 +196,3 @@ class TwoFactorRecoveryCode(models.Model):
     def __str__(self):
         state = "Used" if self.is_used else "Active"
         return f"Recovery Code ({state}) for {self.user.username}"
-

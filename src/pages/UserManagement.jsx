@@ -1,24 +1,47 @@
-import { useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Bell, Check, ChevronLeft, ChevronRight, CircleSlash,
   Filter, LayoutDashboard, FileText, Activity, ShieldCheck,
   Shield, SlidersHorizontal, UserRound, LogOut, Search,
   Pencil, Plus, X,
 } from 'lucide-react'
+import {
+  createUser,
+  getCurrentUser,
+  listUsers,
+  suspendUser,
+  unsuspendUser,
+  updateUser,
+} from '../services/auth.js'
 
-const initialUsers = [
-  { id: 1, name: 'John Doe', email: 'john@example.com', role: 'Employee', status: 'Active', lastLogin: '20 Oct 2026' },
-  { id: 2, name: 'Sara Smith', email: 'sara@example.com', role: 'Employee', status: 'Active', lastLogin: '20 Oct 2026' },
-  { id: 3, name: 'Anna Green', email: 'anna@example.com', role: 'Employee', status: 'Suspended', lastLogin: '13 Oct 2026' },
-  { id: 4, name: 'Tom Wilson', email: 'tom@example.com', role: 'Employee', status: 'Active', lastLogin: '19 Oct 2026' },
-  { id: 5, name: 'Lisa White', email: 'lisa@example.com', role: 'Employee', status: 'Active', lastLogin: '19 Oct 2026' },
-  { id: 6, name: 'David Lee', email: 'david@example.com', role: 'Employee', status: 'Active', lastLogin: '18 Oct 2026' },
-  { id: 7, name: 'Emma Davis', email: 'emma@example.com', role: 'Employee', status: 'Active', lastLogin: '17 Oct 2026' },
-  { id: 8, name: 'Admin User', email: 'admin@example.com', role: 'Administrator', status: 'Active', lastLogin: '20 Oct 2026', self: true },
-  { id: 9, name: 'Ryan Clark', email: 'ryan@example.com', role: 'Employee', status: 'Active', lastLogin: '16 Oct 2026' },
-  { id: 10, name: 'Mia Taylor', email: 'mia@example.com', role: 'Employee', status: 'Active', lastLogin: '15 Oct 2026' },
-]
+const PAGE_SIZE = 8
+
+function formatUser(user, currentUserId) {
+  return {
+    ...user,
+    name: user.display_name || [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username,
+    role: user.role === 'ADMIN' ? 'Administrator' : 'Employee',
+    status: user.status === 'SUSPENDED' ? 'Suspended' : 'Active',
+    lastLogin: user.last_login
+      ? new Date(user.last_login).toLocaleString()
+      : 'Never',
+    self: user.id === currentUserId,
+  }
+}
+
+function suspensionPreview(selection) {
+  const now = Date.now()
+  if (selection.duration === 'manual') return null
+  if (selection.duration === '1-hour') return new Date(now + 60 * 60 * 1000)
+  if (selection.duration === '24-hours') return new Date(now + 24 * 60 * 60 * 1000)
+  if (selection.duration === '7-days') return new Date(now + 7 * 24 * 60 * 60 * 1000)
+
+  const amount = Number(selection.customAmount)
+  if (!Number.isInteger(amount) || amount < 1 || amount > 365) return null
+  const multiplier = selection.customUnit === 'days' ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000
+  return new Date(now + amount * multiplier)
+}
 
 const navItems = [
   ['Dashboard', LayoutDashboard],
@@ -103,71 +126,173 @@ function Status({ value }) {
 }
 
 export default function UserManagement() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const [searchParams] = useSearchParams()
-  const [users, setUsers] = useState(initialUsers)
+  const [users, setUsers] = useState([])
   const [search, setSearch] = useState('')
-  const initialRole = searchParams.get('role') === 'Employee' ? 'Employee' : 'All roles'
-  const [role, setRole] = useState(initialRole)
+  const initialSection = searchParams.get('role') === 'Employee' ? 'EMPLOYEE' : 'ADMIN'
+  const [section, setSection] = useState(initialSection)
   const [status, setStatus] = useState('All statuses')
-  const [applied, setApplied] = useState({ search: '', role: initialRole, status: 'All statuses' })
+  const [applied, setApplied] = useState({ search: '', status: 'All statuses' })
   const [page, setPage] = useState(1)
   const [dialog, setDialog] = useState(null)
   const [draft, setDraft] = useState({ name: '', email: '', role: 'Employee' })
+  const [suspension, setSuspension] = useState({
+    duration: 'manual',
+    customAmount: '1',
+    customUnit: 'hours',
+    reason: '',
+  })
+  const [currentUserId, setCurrentUserId] = useState(null)
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
-  const filteredUsers = useMemo(() => users.filter((user) => {
-    const matchesSearch = `${user.name} ${user.email}`.toLowerCase().includes(applied.search.toLowerCase())
-    const matchesRole = applied.role === 'All roles' || user.role === applied.role
-    const matchesStatus = applied.status === 'All statuses' || user.status === applied.status
-    return matchesSearch && matchesRole && matchesStatus
-  }), [users, applied])
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const visibleUsers = useMemo(() => users.map((user) => formatUser(user, currentUserId)), [users, currentUserId])
+  const expiryPreview = dialog?.type === 'status' && dialog.user.status === 'Active'
+    ? suspension.duration === 'manual' ? 'manual' : suspensionPreview(suspension)
+    : null
 
-  const pageSize = 8
-  const pageCount = Math.max(1, Math.ceil(filteredUsers.length / pageSize))
-  const visibleUsers = filteredUsers.slice((page - 1) * pageSize, page * pageSize)
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      setError('')
+      try {
+        const currentUser = await getCurrentUser()
+        if (!currentUser) {
+          navigate('/', {
+            replace: true,
+            state: { from: `${location.pathname}${location.search}` },
+          })
+          return
+        }
+        if (currentUser.role !== 'ADMIN') {
+          navigate('/employee/dashboard', { replace: true })
+          return
+        }
+
+        const userData = await listUsers({
+          search: applied.search,
+          status: applied.status === 'All statuses' ? '' : applied.status.toUpperCase(),
+          role: section,
+          page,
+          pageSize: PAGE_SIZE,
+        })
+        if (cancelled) return
+        setUsers(userData.results || [])
+        setTotal(userData.total ?? 0)
+        setCurrentUserId(currentUser?.id ?? null)
+      } catch (loadError) {
+        if (loadError.status === 401) {
+          navigate('/', {
+            replace: true,
+            state: { from: `${location.pathname}${location.search}` },
+          })
+          return
+        }
+        if (!cancelled) setError(loadError.message || 'Unable to load users.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [section, applied, page, location.pathname, location.search, navigate])
 
   function applyFilters() {
-    setApplied({ search, role, status })
+    setApplied({ search, status })
     setPage(1)
   }
 
-  function confirmAction() {
+  async function confirmAction() {
     if (!dialog) return
+    setSaving(true)
+    setError('')
+    try {
+      if (dialog.type === 'status') {
+        if (dialog.user.status === 'Active') {
+          const reason = suspension.reason.trim()
+          if (!reason) {
+            setError('Enter a reason for suspending this account.')
+            return
+          }
+          const amount = Number(suspension.customAmount)
+          if (suspension.duration === 'custom' && (!Number.isInteger(amount) || amount < 1 || amount > 365)) {
+            setError('Custom duration must be between 1 and 365 hours or days.')
+            return
+          }
 
-    if (dialog.type === 'status') {
-      setUsers((current) => current.map((user) =>
-        user.id === dialog.user.id
-          ? { ...user, status: user.status === 'Active' ? 'Suspended' : 'Active' }
-          : user
-      ))
-      setNotice(`${dialog.user.name}'s account status was updated in this demo.`)
-    }
-
-    if (dialog.type === 'edit') {
-      setUsers((current) => current.map((user) =>
-        user.id === dialog.user.id
-          ? { ...user, name: draft.name.trim(), email: draft.email.trim(), role: draft.role }
-          : user
-      ))
-      setNotice('User details updated in this demo.')
-    }
-
-    if (dialog.type === 'add') {
-      setUsers((current) => [
-        ...current,
-        {
-          id: Math.max(0, ...current.map((user) => user.id)) + 1,
+          const duration = suspension.duration === 'manual'
+            ? {}
+            : suspension.duration === '1-hour'
+            ? { duration_hours: 1 }
+            : suspension.duration === '24-hours'
+              ? { duration_hours: 24 }
+              : suspension.duration === '7-days'
+                ? { duration_days: 7 }
+                : suspension.customUnit === 'days'
+                  ? { duration_days: amount }
+                  : { duration_hours: amount }
+          const result = await suspendUser(dialog.user.id, { ...duration, reason })
+          const statusMatches = applied.status === 'All statuses' || result.user.status === applied.status.toUpperCase()
+          setUsers((current) => statusMatches
+            ? current.map((user) => user.id === dialog.user.id ? result.user : user)
+            : current.filter((user) => user.id !== dialog.user.id))
+          if (!statusMatches) setTotal((current) => Math.max(0, current - 1))
+          setNotice(`${dialog.user.name}'s account has been suspended.`)
+        } else {
+          const result = await unsuspendUser(dialog.user.id)
+          const statusMatches = applied.status === 'All statuses' || result.user.status === applied.status.toUpperCase()
+          setUsers((current) => statusMatches
+            ? current.map((user) => user.id === dialog.user.id ? result.user : user)
+            : current.filter((user) => user.id !== dialog.user.id))
+          if (!statusMatches) setTotal((current) => Math.max(0, current - 1))
+          setNotice(`${dialog.user.name}'s account has been reactivated.`)
+        }
+      } else if (dialog.type === 'edit') {
+        const result = await updateUser(dialog.user.id, {
           name: draft.name.trim(),
           email: draft.email.trim(),
-          role: draft.role,
-          status: 'Active',
-          lastLogin: 'Never',
-        },
-      ])
-      setNotice('Sample user added to this demo.')
+          role: draft.role === 'Administrator' ? 'ADMIN' : 'EMPLOYEE',
+        })
+        if (result.role === section) {
+          setUsers((current) => current.map((user) => user.id === dialog.user.id ? result : user))
+        } else {
+          setUsers((current) => current.filter((user) => user.id !== dialog.user.id))
+          setTotal((current) => Math.max(0, current - 1))
+        }
+        setNotice('User details updated.')
+      } else if (dialog.type === 'add') {
+        const result = await createUser({
+          name: draft.name.trim(),
+          email: draft.email.trim(),
+          role: draft.role === 'Administrator' ? 'ADMIN' : 'EMPLOYEE',
+        })
+        setNotice('User account created.')
+        if (result.role === section) {
+          setPage(1)
+          const userData = await listUsers({
+            search: applied.search,
+            status: applied.status === 'All statuses' ? '' : applied.status.toUpperCase(),
+            role: section,
+            page: 1,
+            pageSize: PAGE_SIZE,
+          })
+          setUsers(userData.results || [])
+          setTotal(userData.total ?? 0)
+        }
+      }
+      setDialog(null)
+    } catch (actionError) {
+      setError(actionError.message || 'Unable to update the account.')
+    } finally {
+      setSaving(false)
     }
-
-    setDialog(null)
   }
 
   function openEdit(user) {
@@ -178,6 +303,12 @@ export default function UserManagement() {
   function openAdd() {
     setDraft({ name: '', email: '', role: 'Employee' })
     setDialog({ type: 'add' })
+  }
+
+  function openStatusDialog(user) {
+    setError('')
+    setSuspension({ duration: 'manual', customAmount: '1', customUnit: 'hours', reason: '' })
+    setDialog({ type: 'status', user })
   }
 
   return (
@@ -194,16 +325,15 @@ export default function UserManagement() {
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => setNotice('You have 3 sample notifications in this demo.')}
+              onClick={() => navigate('/admin/security')}
               className="relative flex items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 py-2 text-xs font-semibold text-emerald-800"
             >
               <Bell size={15} /> Notifications
-              <span className="absolute -right-1 -top-1 rounded-full bg-red-500 px-1 text-[10px] text-white">3</span>
             </button>
 
             <button
               type="button"
-              onClick={() => setNotice('Profile page has not been built yet.')}
+              onClick={() => navigate('/admin/profile')}
               className="flex items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 py-2 text-xs"
             >
               <UserRound size={15} /> Profile
@@ -212,7 +342,7 @@ export default function UserManagement() {
             <div className="hidden items-center gap-2 sm:flex">
               <span className="flex size-9 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-800">AD</span>
               <div className="text-xs">
-                <p className="font-bold">Admin User</p>
+                <p className="font-bold">Administrator</p>
                 <p className="text-violet-800">Administrator</p>
               </div>
             </div>
@@ -220,6 +350,31 @@ export default function UserManagement() {
         </header>
 
         <section className="rounded-2xl bg-white p-4 shadow-sm sm:p-5">
+          <div className="mb-4 flex flex-wrap gap-2 border-b border-slate-100 pb-3" role="tablist" aria-label="User role">
+            {[
+              ['ADMIN', 'Administrators'],
+              ['EMPLOYEE', 'Employees'],
+            ].map(([roleValue, label]) => (
+              <button
+                key={roleValue}
+                type="button"
+                role="tab"
+                aria-selected={section === roleValue}
+                onClick={() => {
+                  setSection(roleValue)
+                  setPage(1)
+                }}
+                className={`rounded-full px-4 py-2 text-xs font-semibold ${
+                  section === roleValue
+                    ? 'bg-emerald-700 text-white'
+                    : 'border border-slate-200 text-slate-600 hover:bg-emerald-50'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           <div className="mb-4 grid grid-cols-1 items-end gap-3 sm:grid-cols-2 xl:grid-cols-[2fr_1fr_1fr_auto_auto]">
             <label className="block text-xs font-semibold">
               Search Users
@@ -236,12 +391,10 @@ export default function UserManagement() {
             </label>
 
             <label className="block text-xs font-semibold">
-              Role
-              <select value={role} onChange={(event) => setRole(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-normal">
-                <option>All roles</option>
-                <option>Administrator</option>
-                <option>Employee</option>
-              </select>
+              Section
+              <span className="mt-1 flex min-h-[38px] items-center rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-normal text-slate-500">
+                {section === 'ADMIN' ? 'Administrators' : 'Employees'}
+              </span>
             </label>
 
             <label className="block text-xs font-semibold">
@@ -271,6 +424,15 @@ export default function UserManagement() {
             </div>
           )}
 
+          {error && (
+            <div role="alert" className="mb-3 flex items-center justify-between rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
+              <span>{error}</span>
+              <button type="button" onClick={() => setError('')} aria-label="Dismiss error">
+                <X size={15} />
+              </button>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full min-w-[800px] text-left text-xs">
               <thead>
@@ -283,7 +445,20 @@ export default function UserManagement() {
                 </tr>
               </thead>
               <tbody>
-                {visibleUsers.map((user) => (
+                {loading && (
+                  <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-500">Loading users...</td></tr>
+                )}
+                {!loading && error && users.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-10 text-center text-slate-500">
+                      Unable to load accounts. Use the filters or try again.
+                      <button type="button" onClick={() => setApplied({ ...applied })} className="ml-2 font-semibold text-emerald-800 underline">
+                        Retry
+                      </button>
+                    </td>
+                  </tr>
+                )}
+                {!loading && visibleUsers.map((user) => (
                   <tr key={user.id} className="border-b border-slate-100 last:border-0">
                     <td className="px-2 py-2.5">
                       <div className="flex items-center gap-2.5">
@@ -297,7 +472,14 @@ export default function UserManagement() {
                       </div>
                     </td>
                     <td className="px-2 py-2.5">{user.role}</td>
-                    <td className="px-2 py-2.5"><Status value={user.status} /></td>
+                    <td className="px-2 py-2.5">
+                      <Status value={user.status} />
+                      {user.status === 'Suspended' && user.suspension_end && (
+                        <span className="mt-1 block text-[10px] text-slate-500">
+                          Until {new Date(user.suspension_end).toLocaleString()}
+                        </span>
+                      )}
+                    </td>
                     <td className="whitespace-nowrap px-2 py-2.5">{user.lastLogin}</td>
                     <td className="px-2 py-2.5">
                       {user.self ? (
@@ -307,27 +489,29 @@ export default function UserManagement() {
                           <button type="button" onClick={() => openEdit(user)} className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1.5 font-semibold text-emerald-800 hover:bg-emerald-50">
                             <Pencil size={12} /> Edit User
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setDialog({ type: 'status', user })}
-                            className={`inline-flex items-center gap-1 rounded-full border px-3 py-1.5 font-semibold ${
-                              user.status === 'Active'
-                                ? 'border-red-200 text-red-700 hover:bg-red-50'
-                                : 'border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800'
-                            }`}
-                          >
-                            {user.status === 'Active'
-                              ? <><CircleSlash size={12} /> Suspend Account</>
-                              : <><Check size={12} /> Reactivate</>}
-                          </button>
+                          {section === 'EMPLOYEE' && (
+                            <button
+                              type="button"
+                              onClick={() => openStatusDialog(user)}
+                              className={`inline-flex items-center gap-1 rounded-full border px-3 py-1.5 font-semibold ${
+                                user.status === 'Active'
+                                  ? 'border-red-200 text-red-700 hover:bg-red-50'
+                                  : 'border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800'
+                              }`}
+                            >
+                              {user.status === 'Active'
+                                ? <><CircleSlash size={12} /> Suspend Account</>
+                                : <><Check size={12} /> Reactivate Account</>}
+                            </button>
+                          )}
                         </div>
                       )}
                     </td>
                   </tr>
                 ))}
-                {visibleUsers.length === 0 && (
+                {!loading && !error && visibleUsers.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-10 text-center text-slate-500">No users match these filters.</td>
+                    <td colSpan={5} className="px-4 py-10 text-center text-slate-500">No {section === 'ADMIN' ? 'administrators' : 'employees'} match these filters.</td>
                   </tr>
                 )}
               </tbody>
@@ -336,7 +520,7 @@ export default function UserManagement() {
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-slate-500">
-              Showing {filteredUsers.length ? (page - 1) * pageSize + 1 : 0}-{Math.min(page * pageSize, filteredUsers.length)} of {filteredUsers.length} users
+              Showing {total ? (page - 1) * PAGE_SIZE + 1 : 0}-{Math.min(page * PAGE_SIZE, total)} of {total} users
             </p>
             <div className="flex flex-wrap items-center gap-1">
               <button type="button" disabled={page === 1} onClick={() => setPage((current) => current - 1)} className="rounded-full border px-3 py-2 text-xs disabled:opacity-40">
@@ -350,7 +534,7 @@ export default function UserManagement() {
                   </button>
                 )
               })}
-              <button type="button" disabled={page === pageCount} onClick={() => setPage((current) => current + 1)} className="rounded-full border px-3 py-2 text-xs disabled:opacity-40">
+              <button type="button" disabled={loading || page === pageCount} onClick={() => setPage((current) => current + 1)} className="rounded-full border px-3 py-2 text-xs disabled:opacity-40">
                 Next <ChevronRight size={13} className="inline" />
               </button>
             </div>
@@ -358,8 +542,7 @@ export default function UserManagement() {
         </section>
 
         <p className="mt-4 text-xs leading-relaxed text-slate-500">
-          This page uses sample data stored temporarily in the browser state.
-          Real account changes, database persistence and audit logging require the backend.
+          Account changes are saved securely and recorded in the audit trail.
         </p>
       </div>
 
@@ -379,14 +562,91 @@ export default function UserManagement() {
               </button>
             </div>
 
+            {error && (
+              <div role="alert" className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
+                {error}
+              </div>
+            )}
+
+            {error && (
+              <div role="alert" className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
+                {error}
+              </div>
+            )}
+
             {dialog.type === 'status' ? (
-              <p className="text-sm leading-relaxed text-slate-600">
-                Are you sure you want to {dialog.user.status === 'Active' ? 'suspend' : 'reactivate'} {dialog.user.name}'s account? This is a frontend demo; no real account will be changed.
-              </p>
+              dialog.user.status === 'Active' ? (
+                <div className="space-y-4">
+                  <p className="text-sm leading-relaxed text-slate-600">
+                    Suspend <span className="font-semibold text-slate-800">{dialog.user.name}</span> ({dialog.user.email})?
+                  </p>
+                  <label className="block text-sm font-medium">
+                    Suspension duration
+                    <select
+                      value={suspension.duration}
+                      onChange={(event) => setSuspension({ ...suspension, duration: event.target.value })}
+                      className="mt-1 w-full rounded-xl border bg-white px-3 py-2.5 text-sm"
+                    >
+                      <option value="manual">Until manually reactivated</option>
+                      <option value="1-hour">1 hour</option>
+                      <option value="24-hours">24 hours</option>
+                      <option value="7-days">7 days</option>
+                      <option value="custom">Custom duration</option>
+                    </select>
+                  </label>
+                  {suspension.duration === 'custom' && (
+                    <div className="grid grid-cols-[1fr_1fr] gap-3">
+                      <label className="block text-sm font-medium">
+                        Duration
+                        <input
+                          type="number"
+                          min="1"
+                          max="365"
+                          required
+                          value={suspension.customAmount}
+                          onChange={(event) => setSuspension({ ...suspension, customAmount: event.target.value })}
+                          className="mt-1 w-full rounded-xl border px-3 py-2.5 text-sm"
+                        />
+                      </label>
+                      <label className="block text-sm font-medium">
+                        Unit
+                        <select
+                          value={suspension.customUnit}
+                          onChange={(event) => setSuspension({ ...suspension, customUnit: event.target.value })}
+                          className="mt-1 w-full rounded-xl border bg-white px-3 py-2.5 text-sm"
+                        >
+                          <option value="hours">Hours</option>
+                          <option value="days">Days</option>
+                        </select>
+                      </label>
+                    </div>
+                  )}
+                  <label className="block text-sm font-medium">
+                    Reason
+                    <textarea
+                      required
+                      maxLength={1000}
+                      value={suspension.reason}
+                      onChange={(event) => setSuspension({ ...suspension, reason: event.target.value })}
+                      className="mt-1 min-h-20 w-full rounded-xl border px-3 py-2.5 text-sm"
+                      placeholder="Enter the reason for this suspension"
+                    />
+                  </label>
+                  <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+                    {expiryPreview === 'manual'
+                      ? 'Suspension remains in effect until manually reactivated.'
+                      : `Suspension expires: ${expiryPreview ? expiryPreview.toLocaleString() : 'Enter a valid duration'}`}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm leading-relaxed text-slate-600">
+                  Reactivate <span className="font-semibold text-slate-800">{dialog.user.name}</span> ({dialog.user.email}) now? This will end the current suspension immediately.
+                </p>
+              )
             ) : (
               <form id="user-form" onSubmit={(event) => {
                 event.preventDefault()
-                confirmAction()
+                void confirmAction()
               }} className="space-y-4">
                 <label className="block text-sm font-medium">
                   Full name
@@ -412,13 +672,14 @@ export default function UserManagement() {
               </button>
               <button
                 type="button"
+                disabled={saving || (dialog.type === 'status' && dialog.user.status === 'Active' && !expiryPreview)}
                 onClick={() => {
-                  if (dialog.type === 'status') confirmAction()
+                  if (dialog.type === 'status') void confirmAction()
                   else document.getElementById('user-form')?.requestSubmit()
                 }}
-                className="rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800"
+                className="rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Confirm
+                {saving ? 'Saving...' : 'Confirm'}
               </button>
             </div>
           </section>

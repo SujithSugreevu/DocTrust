@@ -9,12 +9,11 @@ class IsActiveUser(BasePermission):
     message = "Your account is not active or has been suspended."
 
     def has_permission(self, request, view):
-        return bool(
-            request.user
-            and request.user.is_authenticated
-            and request.user.is_active
-            and request.user.status == User.Status.ACTIVE
-        )
+        if not (request.user and request.user.is_authenticated and request.user.is_active):
+            return False
+        if request.user.is_currently_suspended:
+            return False
+        return request.user.status == User.Status.ACTIVE
 
 
 class IsAdminRole(BasePermission):
@@ -24,10 +23,11 @@ class IsAdminRole(BasePermission):
     message = "Administrator privileges are required to access this resource."
 
     def has_permission(self, request, view):
-        return bool(
-            request.user
-            and request.user.is_authenticated
-            and request.user.is_active
-            and request.user.status == User.Status.ACTIVE
+        if not (request.user and request.user.is_authenticated and request.user.is_active):
+            return False
+        if request.user.is_currently_suspended:
+            return False
+        return (
+            request.user.status == User.Status.ACTIVE
             and request.user.is_admin_role
         )

@@ -402,3 +402,337 @@ class AuditEventAdminAccessAndPrivacyTests(TestCase):
 
         for field in self.admin.list_filter:
             self.assertNotIn(field.lower(), forbidden_fields)
+
+
+from rest_framework import status
+from rest_framework.test import APIClient, APITestCase
+
+from accounts.authentication import create_tab_session
+
+
+class TabSessionTestMixin:
+    def authenticate_as(self, user):
+        user.backend = "accounts.backends.EmailOrUsernameBackend"
+        self.client.credentials(
+            HTTP_X_DOCTRUST_SESSION=create_tab_session(user, remember_me=True),
+        )
+
+
+class AuditAPITests(TabSessionTestMixin, APITestCase):
+    """Tests for the Permission Audits REST API views."""
+
+    def setUp(self):
+        self.admin_user = User.objects.create_user(
+            username="admin_auditor",
+            email="admin_auditor@example.com",
+            password="admin_password123",
+            role=User.Role.ADMIN,
+        )
+        self.employee_user = User.objects.create_user(
+            username="employee_subject",
+            email="employee_subject@example.com",
+            password="emp_password123",
+            role=User.Role.EMPLOYEE,
+        )
+        self.other_employee = User.objects.create_user(
+            username="other_emp",
+            email="other_emp@example.com",
+            password="other_password123",
+            role=User.Role.EMPLOYEE,
+        )
+
+        # Create sample events
+        self.admin_event = AuditEvent.objects.create(
+            actor=self.admin_user,
+            action=AuditEvent.Action.LOGIN_SUCCESS,
+            target_type="accounts.User",
+            target_id=str(self.admin_user.pk),
+            ip_address="127.0.0.1",
+        )
+        self.admin_fail_event = AuditEvent.objects.create(
+            actor=self.admin_user,
+            action=AuditEvent.Action.LOGIN_FAILED,
+            target_type="accounts.User",
+            target_id=str(self.admin_user.pk),
+            ip_address="127.0.0.1",
+            metadata={"reason": "invalid_credentials"},
+        )
+        self.emp_event = AuditEvent.objects.create(
+            actor=self.employee_user,
+            action=AuditEvent.Action.DOCUMENT_UPLOAD,
+            target_type="documents.Document",
+            target_id="doc-101",
+            ip_address="192.168.1.50",
+            metadata={"file_size": 2048, "content_type": "application/pdf"},
+        )
+        self.emp_doc_delete = AuditEvent.objects.create(
+            actor=self.other_employee,
+            action=AuditEvent.Action.DOCUMENT_DELETE,
+            target_type="documents.Document",
+            target_id="doc-202",
+            ip_address="192.168.1.51",
+        )
+
+    def test_unauthenticated_access_rejected(self):
+        """Unauthenticated requests to audit endpoints must be denied."""
+        endpoints = [
+            "/api/audit/admin/",
+            "/api/audit/employee/",
+            f"/api/audit/events/{self.admin_event.pk}/",
+            "/api/audit/admin/export/",
+            "/api/audit/employee/export/",
+            "/api/audit/action-types/",
+            "/api/audit/users/",
+        ]
+        for url in endpoints:
+            response = self.client.get(url)
+            self.assertIn(
+                response.status_code,
+                [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN],
+                f"Expected 401/403 for unauthenticated GET {url}, got {response.status_code}",
+            )
+
+    def test_employee_access_forbidden(self):
+        """Employee users must receive 403 Forbidden on all audit endpoints."""
+        self.authenticate_as(self.employee_user)
+        endpoints = [
+            "/api/audit/admin/",
+            "/api/audit/employee/",
+            f"/api/audit/events/{self.admin_event.pk}/",
+            "/api/audit/admin/export/",
+            "/api/audit/employee/export/",
+            "/api/audit/action-types/",
+            "/api/audit/users/",
+        ]
+        for url in endpoints:
+            response = self.client.get(url)
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_403_FORBIDDEN,
+                f"Expected 403 for employee GET {url}, got {response.status_code}",
+            )
+
+    def test_admin_list_admin_events(self):
+        """Admin list endpoint returns only events performed by ADMIN actors."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/admin/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_count"], 2)
+        results = response.data["results"]
+        for item in results:
+            self.assertEqual(item["actor_role"], "ADMIN")
+
+    def test_admin_list_employee_events(self):
+        """Employee list endpoint returns only events performed by EMPLOYEE actors."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/employee/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_count"], 2)
+        results = response.data["results"]
+        for item in results:
+            self.assertEqual(item["actor_role"], "EMPLOYEE")
+
+    def test_filter_by_search(self):
+        """Search query filters across actor username, action, and target fields."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/employee/?search=doc-101")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_count"], 1)
+        self.assertEqual(response.data["results"][0]["target_id"], "doc-101")
+
+        response = self.client.get("/api/audit/employee/?search=other_emp")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_count"], 1)
+
+    def test_filter_by_action_type(self):
+        """Filter by action_type returns only matching events."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/employee/?action_type=DOCUMENT_UPLOAD")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_count"], 1)
+        self.assertEqual(response.data["results"][0]["action"], "DOCUMENT_UPLOAD")
+
+    def test_filter_by_user(self):
+        """Filter by user username returns only events for that user."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/employee/?user=other_emp")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_count"], 1)
+        self.assertEqual(response.data["results"][0]["actor_username"], "other_emp")
+
+    def test_filter_by_outcome(self):
+        """Filter by outcome (success vs failed) correctly partitions events."""
+        self.authenticate_as(self.admin_user)
+        res_fail = self.client.get("/api/audit/admin/?outcome=failed")
+        self.assertEqual(res_fail.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_fail.data["total_count"], 1)
+        self.assertEqual(res_fail.data["results"][0]["outcome"], "Failed")
+
+        res_succ = self.client.get("/api/audit/admin/?outcome=success")
+        self.assertEqual(res_succ.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_succ.data["total_count"], 1)
+        self.assertEqual(res_succ.data["results"][0]["outcome"], "Success")
+
+    def test_pagination(self):
+        """Pagination returns correct page, page_size, and total_pages."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/employee/?page=1&page_size=1")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["total_count"], 2)
+        self.assertEqual(response.data["page"], 1)
+        self.assertEqual(response.data["page_size"], 1)
+        self.assertEqual(response.data["total_pages"], 2)
+
+    def test_event_detail_endpoint(self):
+        """Event detail endpoint returns full event details with safe metadata."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get(f"/api/audit/events/{self.emp_event.pk}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.emp_event.pk)
+        self.assertEqual(response.data["actor_username"], "employee_subject")
+        self.assertEqual(response.data["actor_role"], "EMPLOYEE")
+        self.assertEqual(response.data["action"], "DOCUMENT_UPLOAD")
+        self.assertEqual(response.data["target_id"], "doc-101")
+        self.assertEqual(response.data["safe_metadata"]["file_size"], 2048)
+
+    def test_event_detail_404_for_nonexistent(self):
+        """Event detail returns 404 for non-existent event ID."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/events/999999/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_csv_export_admin(self):
+        """Admin CSV export returns text/csv with correct headers and rows."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/admin/export/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        self.assertIn("attachment; filename=", response["Content-Disposition"])
+        content = response.content.decode("utf-8")
+        self.assertIn("Timestamp,User,Role,Action,Description,Target Resource,IP Address,Outcome", content)
+        self.assertIn("admin_auditor", content)
+
+    def test_csv_export_employee(self):
+        """Employee CSV export returns text/csv with correct employee records."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/employee/export/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        content = response.content.decode("utf-8")
+        self.assertIn("employee_subject", content)
+        self.assertNotIn("admin_auditor", content)
+
+    def test_action_types_endpoint(self):
+        """Action types endpoint returns all defined AuditEvent actions."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/action-types/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        values = [item["value"] for item in response.data["action_types"]]
+        self.assertIn("DOCUMENT_UPLOAD", values)
+        self.assertIn("LOGIN_SUCCESS", values)
+        self.assertIn("LOGIN_FAILED", values)
+
+    def test_audit_users_endpoint(self):
+        """Audit users endpoint returns usernames of actors who have audit events."""
+        self.authenticate_as(self.admin_user)
+        response = self.client.get("/api/audit/users/?role=EMPLOYEE")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        usernames = response.data["users"]
+        self.assertIn("employee_subject", usernames)
+        self.assertIn("other_emp", usernames)
+        self.assertNotIn("admin_auditor", usernames)
+
+
+class AdminSecurityMonitoringAndDashboardTests(TabSessionTestMixin, TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(
+            username="admin_sec",
+            email="admin_sec@doctrust.local",
+            password="AdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.Status.ACTIVE,
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.employee = User.objects.create_user(
+            username="emp_sec",
+            email="emp_sec@doctrust.local",
+            password="EmployeePassword123!",
+            role=User.Role.EMPLOYEE,
+            status=User.Status.ACTIVE,
+        )
+        from auditlog.models import SecurityAlert
+        self.alert = SecurityAlert.objects.create(
+            title="Multiple failed login attempts detected",
+            severity=SecurityAlert.Severity.HIGH,
+            status=SecurityAlert.Status.OPEN,
+            scope=SecurityAlert.Scope.EMPLOYEE,
+            alert_type="FAILED_LOGIN",
+            details="5 failed attempts detected",
+            target_user=self.employee,
+            ip_address="192.168.1.100",
+        )
+
+    def test_security_alert_list_and_resolve(self):
+        self.authenticate_as(self.admin)
+        # List alerts
+        resp = self.client.get("/api/audit/security-alerts/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIn("results", resp.data)
+        alerts_list = resp.data["results"]
+        self.assertTrue(len(alerts_list) >= 1)
+        alert_obj = next((a for a in alerts_list if a["id"] == self.alert.id), None)
+        self.assertIsNotNone(alert_obj)
+        self.assertEqual(alert_obj["status"].upper(), "OPEN")
+
+        # Resolve alert
+        resolve_resp = self.client.post(
+            f"/api/audit/security-alerts/{self.alert.id}/resolve/",
+            {"resolution_notes": "Verified legitimate user password reset."},
+            format="json",
+        )
+        self.assertEqual(resolve_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resolve_resp.data["alert"]["status"].upper(), "RESOLVED")
+
+        # Verify DB persistence
+        self.alert.refresh_from_db()
+        self.assertEqual(self.alert.status.upper(), "RESOLVED")
+        self.assertEqual(self.alert.resolved_by, self.admin)
+        self.assertIsNotNone(self.alert.resolved_at)
+
+        # Verify audit trail recorded resolution
+        audit_res = AuditEvent.objects.filter(action=AuditEvent.Action.SECURITY_ALERT_RESOLVED)
+        self.assertTrue(audit_res.exists())
+
+    def test_security_alert_employee_access_forbidden(self):
+        self.authenticate_as(self.employee)
+        resp = self.client.get("/api/audit/security-alerts/")
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_dashboard_stats_endpoint(self):
+        self.authenticate_as(self.admin)
+        # Test default and range=today
+        resp = self.client.get("/api/audit/dashboard-stats/?range=today")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIn("stats", resp.data)
+        self.assertIn("chart_data", resp.data)
+        self.assertIn("registered_users", resp.data["stats"])
+        self.assertIn("activities", resp.data)
+
+    def test_activity_summary_endpoint(self):
+        self.authenticate_as(self.admin)
+        resp = self.client.get("/api/audit/activity-summary/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIn("total_events", resp.data)
+        self.assertIn("success_rate", resp.data)
+        self.assertIn("active_users_count", resp.data)
+
+    def test_document_overview_zero_trust_access(self):
+        self.authenticate_as(self.admin)
+        resp = self.client.get("/api/audit/documents-overview/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIn("total_count", resp.data)
+        self.assertIn("results", resp.data)
+        for doc in resp.data["results"]:
+            self.assertFalse(doc["can_download"])

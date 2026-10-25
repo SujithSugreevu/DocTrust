@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.backends import ModelBackend
+from django.core.exceptions import PermissionDenied
 from django.db.models import Q
 
 UserModel = get_user_model()
@@ -25,6 +26,8 @@ class EmailOrUsernameBackend(ModelBackend):
             return None
 
         if user and user.check_password(password):
+            if user.check_and_update_suspension():
+                raise PermissionDenied("This account has been suspended.")
             return user
 
         return None

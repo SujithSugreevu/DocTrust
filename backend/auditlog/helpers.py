@@ -64,6 +64,18 @@ ALLOWED_METADATA_KEYS = frozenset({
     "legal_hold",       # Whether legal hold is enabled (str: "true"/"false")
     "alert_type",       # Type of security alert triggered (str)
     "mfa_method",       # Method used for 2FA verification (str: "totp"/"recovery_code")
+    "updated_fields",   # Fields updated during profile/user edit (list or str)
+    "suspension_reason",# Reason provided for suspension (str)
+    "suspension_end",   # End date of suspension (str)
+    "duration_days",    # Duration in days for suspension (int)
+    "notes",            # Operational notes (str)
+})
+
+
+FAIL_ACTIONS = frozenset({
+    AuditEvent.Action.LOGIN_FAILED,
+    AuditEvent.Action.MFA_LOGIN_FAILED,
+    AuditEvent.Action.SECURITY_ALERT,
 })
 
 
@@ -194,3 +206,116 @@ def log_event(
                 "Operation aborted under fail-closed security policy."
             ) from exc
         return None
+
+
+def create_security_alert(
+    *,
+    title,
+    severity="High",
+    alert_type="GENERAL_ALERT",
+    scope="EMPLOYEE",
+    details="",
+    target_user=None,
+    ip_address=None,
+    request=None,
+):
+    """
+    Creates a persistent SecurityAlert in PostgreSQL, logs a SECURITY_ALERT AuditEvent,
+    and dispatches notification emails if configured in SystemSettings.
+    """
+    from auditlog.models import SecurityAlert, AuditEvent
+    from systemsettings.services import get_system_settings
+    from django.core.mail import send_mail
+    from django.conf import settings
+
+    if request is not None and not ip_address:
+        ip_address = get_client_ip(request)
+
+    alert = SecurityAlert.objects.create(
+        title=title,
+        severity=severity,
+        alert_type=alert_type,
+        scope=scope,
+        details=details,
+        target_user=target_user,
+        ip_address=ip_address,
+    )
+
+    # Log audit event
+    actor = None
+    if request and hasattr(request, "user") and request.user.is_authenticated:
+        actor = request.user
+
+    log_event(
+        actor=actor,
+        action=AuditEvent.Action.SECURITY_ALERT,
+        target=alert,
+        request=request,
+        metadata={"alert_type": alert_type, "status": "Open"},
+        fail_closed=False,
+    )
+
+    # Notify alert recipients if configured
+    try:
+        sys_settings = get_system_settings()
+        if sys_settings.security_notifications_enabled and sys_settings.alert_recipients:
+            subject = f"[DocTrust Alert] {severity}: {title}"
+            body = (
+                f"Security Alert Triggered in DocTrust:\n\n"
+                f"Title: {title}\n"
+                f"Severity: {severity}\n"
+                f"Type: {alert_type}\n"
+                f"Scope: {scope}\n"
+                f"Details: {details}\n"
+                f"Target User: {target_user.username if target_user else 'N/A'}\n"
+                f"IP Address: {ip_address or 'Unknown'}\n\n"
+                f"DocTrust Automated Security System"
+            )
+            send_mail(
+                subject=subject,
+                message=body,
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "security@doctrust.local"),
+                recipient_list=sys_settings.alert_recipients,
+                fail_silently=True,
+            )
+    except Exception as exc:
+        logger.warning("Failed to send security alert notification email: %s", exc)
+
+    return alert
+
+
+def trigger_failed_login_protection(identifier, request, attempted_user=None):
+    """
+    Detect repeated failed logins within 15 minutes.
+    If >= 5 failed attempts, create a SecurityAlert and trigger alert email.
+    """
+    from django.utils import timezone
+    from datetime import timedelta
+    from auditlog.models import AuditEvent
+
+    ip = get_client_ip(request)
+    window_start = timezone.now() - timedelta(minutes=15)
+
+    recent_fails = AuditEvent.objects.filter(
+        action=AuditEvent.Action.LOGIN_FAILED,
+        timestamp__gte=window_start,
+    )
+    if ip:
+        recent_fails = recent_fails.filter(ip_address=ip)
+
+    fail_count = recent_fails.count()
+
+    if fail_count >= 5:
+        severity = "Security Attack" if fail_count >= 10 else "High"
+        scope = attempted_user.role if attempted_user else "EMPLOYEE"
+        create_security_alert(
+            title="Repeated failed login attempts",
+            severity=severity,
+            alert_type="FAILED_LOGIN_ATTACK",
+            scope=scope,
+            details=f"{fail_count} failed login attempts detected in 15 minutes from IP {ip} for identifier '{identifier}'.",
+            target_user=attempted_user,
+            ip_address=ip,
+            request=request,
+        )
+

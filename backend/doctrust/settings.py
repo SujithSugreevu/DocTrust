@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from corsheaders.defaults import default_headers
 
 # ── Paths ────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -59,7 +60,6 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
-    "systemsettings.middleware.MaintenanceModeMiddleware",
     "systemsettings.middleware.SessionIdleTimeoutMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -152,7 +152,7 @@ ALLOWED_UPLOAD_EXTENSIONS = {
 # ── Django REST Framework ────────────────────────────────────────────
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
+        "accounts.authentication.TabSessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -167,6 +167,7 @@ REST_FRAMEWORK = {
         "anon": "20/minute",
         "user": "100/minute",
         "login": "5/minute",
+        "session_verification": "30/minute",
         "password_reset": "5/minute",
         "password_reset_confirm": "5/minute",
     },
@@ -193,6 +194,7 @@ _env_cors = [
 CORS_ALLOWED_ORIGINS = list(dict.fromkeys(_default_dev_origins + _env_cors))
 
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = (*default_headers, "x-doctrust-session")
 
 # ── CSRF ─────────────────────────────────────────────────────────────
 _env_csrf = [

@@ -4,13 +4,11 @@ Singleton system-settings model for DocTrust.
 Stores all administrator-configurable settings in a single PostgreSQL row
 with a CHECK constraint enforcing the singleton pattern (id=1).
 
-Settings are grouped into six logical sections mirroring the frontend:
-1. General Settings (app name, support email, maintenance mode, …)
-2. Authentication & Session Security
+Settings are grouped into logical sections mirroring the frontend:
+1. General Settings (app name, support email, notifications)
+2. Authentication & Security (failed login limit)
 3. File Upload & Storage
-4. Organization Document Security Policies
-5. Retention & Recovery
-6. Audit, Monitoring & Alerts
+4. Audit, Monitoring & Alerts
 """
 
 from django.core.validators import MinValueValidator, MaxValueValidator, EmailValidator
@@ -39,51 +37,19 @@ class SystemSettings(models.Model):
         default=True,
         help_text="Enable email notifications for security events (failed logins, permission changes).",
     )
-    maintenance_mode = models.BooleanField(
-        default=False,
-        help_text="When enabled, non-admin users receive HTTP 503 for protected operations.",
-    )
 
-    # ── Section 2: Authentication & Session Security ──────────────────
-    session_idle_timeout_minutes = models.PositiveIntegerField(
-        default=30,
-        validators=[MinValueValidator(5), MaxValueValidator(1440)],
-        help_text="Session expires after this many idle minutes (5–1440).",
-    )
-    max_session_lifetime_hours = models.PositiveIntegerField(
-        default=24,
-        validators=[MinValueValidator(1), MaxValueValidator(168)],
-        help_text="Absolute session lifetime in hours (1–168).",
-    )
-    min_password_length = models.PositiveIntegerField(
-        default=10,
-        validators=[MinValueValidator(8), MaxValueValidator(128)],
-        help_text="Minimum password length (8–128). Applied via Django password validators.",
-    )
-    require_mfa_admins = models.BooleanField(
-        default=False,
-        help_text="Require MFA for administrator accounts. Currently NOT enforced — MFA flow is not yet implemented.",
-    )
-    require_reauth_sensitive = models.BooleanField(
-        default=True,
-        help_text="Require password re-entry for sensitive operations (e.g. deleting documents, changing settings).",
-    )
+    # ── Section 2: Authentication & Security ──────────────────────────
     failed_login_limit = models.PositiveIntegerField(
         default=5,
         validators=[MinValueValidator(3), MaxValueValidator(20)],
         help_text="Lock account after this many consecutive failed logins (3–20).",
-    )
-    lockout_duration_minutes = models.PositiveIntegerField(
-        default=15,
-        validators=[MinValueValidator(1), MaxValueValidator(1440)],
-        help_text="Account lockout duration in minutes after exceeding failed login limit (1–1440).",
     )
 
     # ── Section 3: File Upload & Storage ──────────────────────────────
     allowed_file_types = models.JSONField(
         default=list,
         blank=True,
-        help_text="List of allowed upload file extensions, e.g. [\".pdf\", \".docx\", \".xlsx\", \".pptx\"].",
+        help_text='List of allowed upload file extensions, e.g. [".pdf", ".docx", ".xlsx", ".pptx"].',
     )
     max_upload_size_mb = models.PositiveIntegerField(
         default=50,
@@ -110,89 +76,7 @@ class SystemSettings(models.Model):
         help_text="Block uploads of executable file types (.exe, .bat, .cmd, .sh, etc.).",
     )
 
-    # ── Section 4: Organization Document Security Policies ────────────
-    class DefaultVisibility(models.TextChoices):
-        PRIVATE = "PRIVATE", "Private"
-        RESTRICTED = "RESTRICTED", "Restricted"
-
-    default_document_visibility = models.CharField(
-        max_length=20,
-        choices=DefaultVisibility.choices,
-        default=DefaultVisibility.PRIVATE,
-        help_text="Default visibility for newly uploaded documents.",
-    )
-    allow_external_sharing = models.BooleanField(
-        default=False,
-        help_text="Allow sharing documents with external recipients outside the organization.",
-    )
-    allow_public_links = models.BooleanField(
-        default=False,
-        help_text="Allow creation of public shareable links for documents.",
-    )
-
-    class DefaultSharePermission(models.TextChoices):
-        VIEW = "VIEW", "View Only"
-        COMMENT = "COMMENT", "Comment"
-        EDIT = "EDIT", "Edit"
-
-    default_share_permission = models.CharField(
-        max_length=20,
-        choices=DefaultSharePermission.choices,
-        default=DefaultSharePermission.VIEW,
-        help_text="Default permission level for newly created shares.",
-    )
-    allow_downloads = models.BooleanField(
-        default=True,
-        help_text="Allow document downloads by authorized recipients.",
-    )
-    allow_printing = models.BooleanField(
-        default=True,
-        help_text="Allow document printing (advisory — cannot be enforced at server level).",
-    )
-    allow_editing = models.BooleanField(
-        default=False,
-        help_text="Allow document editing by authorized recipients by default.",
-    )
-    require_share_expiry = models.BooleanField(
-        default=False,
-        help_text="Require all document shares to have an expiration date.",
-    )
-    max_share_duration_days = models.PositiveIntegerField(
-        default=90,
-        validators=[MinValueValidator(1), MaxValueValidator(365)],
-        help_text="Maximum permitted sharing duration in days (1–365).",
-    )
-    require_transfer_approval = models.BooleanField(
-        default=True,
-        help_text="Require administrator approval for document ownership transfers.",
-    )
-
-    # ── Section 5: Retention & Recovery ───────────────────────────────
-    deleted_recovery_days = models.PositiveIntegerField(
-        default=30,
-        validators=[MinValueValidator(1), MaxValueValidator(365)],
-        help_text="Days that soft-deleted documents remain recoverable (1–365).",
-    )
-    audit_retention_days = models.PositiveIntegerField(
-        default=365,
-        validators=[MinValueValidator(90), MaxValueValidator(3650)],
-        help_text="Audit log retention period in days (90–3650).",
-    )
-    legal_hold_enabled = models.BooleanField(
-        default=False,
-        help_text="When enabled, permanently blocks deletion/purging of all documents.",
-    )
-    auto_permanent_delete = models.BooleanField(
-        default=False,
-        help_text="Automatically purge documents after the recovery period expires.",
-    )
-    deletion_reminder_days = models.PositiveIntegerField(
-        default=7,
-        validators=[MinValueValidator(1), MaxValueValidator(30)],
-        help_text="Days before permanent deletion to send a reminder (1–30).",
-    )
-
-    # ── Section 6: Audit, Monitoring & Alerts ─────────────────────────
+    # ── Section 4: Audit, Monitoring & Alerts ─────────────────────────
     log_document_access = models.BooleanField(
         default=True,
         help_text="Log document view/access events in the audit trail.",
@@ -217,11 +101,6 @@ class SystemSettings(models.Model):
         default=5,
         validators=[MinValueValidator(3), MaxValueValidator(50)],
         help_text="Number of failed logins before triggering an alert (3–50).",
-    )
-    unusual_download_alert_threshold = models.PositiveIntegerField(
-        default=20,
-        validators=[MinValueValidator(5), MaxValueValidator(200)],
-        help_text="Number of downloads in a short period that triggers an alert (5–200). Detection logic is not yet implemented.",
     )
     alert_recipients = models.JSONField(
         default=list,

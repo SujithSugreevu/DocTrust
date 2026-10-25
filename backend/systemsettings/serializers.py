@@ -14,27 +14,17 @@ READ_ONLY_FIELDS = {"id", "updated_at"}
 
 # All known writable fields — anything not in this set is rejected
 WRITABLE_FIELDS = {
-    # Section 1
-    "app_name", "support_email", "security_notifications_enabled", "maintenance_mode",
-    # Section 2
-    "session_idle_timeout_minutes", "max_session_lifetime_hours", "min_password_length",
-    "require_mfa_admins", "require_reauth_sensitive", "failed_login_limit",
-    "lockout_duration_minutes",
-    # Section 3
+    # Section 1: General
+    "app_name", "support_email", "security_notifications_enabled",
+    # Section 2: Authentication
+    "failed_login_limit",
+    # Section 3: File Upload & Storage
     "allowed_file_types", "max_upload_size_mb", "user_storage_quota_mb",
     "org_storage_limit_mb", "storage_warning_threshold_pct", "block_executable_uploads",
-    # Section 4
-    "default_document_visibility", "allow_external_sharing", "allow_public_links",
-    "default_share_permission", "allow_downloads", "allow_printing", "allow_editing",
-    "require_share_expiry", "max_share_duration_days", "require_transfer_approval",
-    # Section 5
-    "deleted_recovery_days", "audit_retention_days", "legal_hold_enabled",
-    "auto_permanent_delete", "deletion_reminder_days",
-    # Section 6
+    # Section 4: Audit, Monitoring & Alerts
     "log_document_access", "log_permission_changes", "log_failed_logins",
     "log_file_downloads", "log_admin_actions", "failed_login_alert_threshold",
-    "unusual_download_alert_threshold", "alert_recipients",
-    "security_notification_method",
+    "alert_recipients", "security_notification_method",
 }
 
 VALID_FILE_EXTENSIONS = {
@@ -124,10 +114,6 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             cleaned.append(email)
         return cleaned
 
-    def validate_deletion_reminder_days(self, value):
-        """Ensure deletion reminder is less than recovery period."""
-        return value
-
     def validate(self, attrs):
         """Cross-field validation and unknown-field rejection."""
         if hasattr(self, "initial_data") and isinstance(self.initial_data, dict):
@@ -136,13 +122,5 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"detail": f"Unknown or unauthorized fields: {', '.join(sorted(unknown))}"}
                 )
-
-        # Cross-field: deletion_reminder_days must be < deleted_recovery_days
-        recovery = attrs.get("deleted_recovery_days")
-        reminder = attrs.get("deletion_reminder_days")
-        if recovery is not None and reminder is not None and reminder >= recovery:
-            raise serializers.ValidationError({
-                "deletion_reminder_days": "Deletion reminder must be fewer days than the recovery period."
-            })
 
         return attrs

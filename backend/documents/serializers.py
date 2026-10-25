@@ -6,7 +6,8 @@ import hashlib
 
 from rest_framework import serializers
 
-from documents.models import Document, Folder
+from accounts.models import User
+from documents.models import Document, DocumentShare, EmployeeNotification, Folder
 
 
 class FolderSerializer(serializers.ModelSerializer):
@@ -143,9 +144,10 @@ class DocumentMetadataUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Document name cannot exceed 100 characters.")
         # Per-owner case-insensitive uniqueness for active/archived documents
         request = self.context.get("request")
-        if request and request.user and request.user.is_authenticated:
+        owner = self.context.get("owner", request.user if request else None)
+        if owner and owner.is_authenticated:
             qs = Document.objects.filter(
-                owner=request.user,
+                owner=owner,
                 name__iexact=name,
                 status__in=[Document.Status.ACTIVE, Document.Status.ARCHIVED],
             )
@@ -161,8 +163,9 @@ class DocumentMetadataUpdateSerializer(serializers.ModelSerializer):
         if value is None:
             return None
         request = self.context.get("request")
+        owner = self.context.get("owner", request.user if request else None)
         try:
-            folder = Folder.objects.get(pk=value, owner=request.user)
+            folder = Folder.objects.get(pk=value, owner=owner)
         except Folder.DoesNotExist:
             raise serializers.ValidationError("Folder not found or does not belong to you.")
         return folder
@@ -174,3 +177,53 @@ class DocumentMetadataUpdateSerializer(serializers.ModelSerializer):
             instance.folder = validated_data["folder"]
         instance.save()
         return instance
+
+
+class DocumentShareSerializer(serializers.ModelSerializer):
+    """Safe share representation; never exposes a recipient's private fields."""
+
+    recipient_username = serializers.CharField(source="recipient.username", read_only=True)
+    recipient_name = serializers.SerializerMethodField()
+    recipient_email = serializers.EmailField(source="recipient.email", read_only=True)
+
+    class Meta:
+        model = DocumentShare
+        fields = [
+            "id", "document", "recipient", "recipient_username", "recipient_name",
+            "recipient_email", "permission", "expires_at", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "document", "recipient_username", "recipient_name", "recipient_email", "created_at", "updated_at"]
+
+    def get_recipient_name(self, obj):
+        return obj.recipient.get_full_name() or obj.recipient.username
+
+
+class DocumentShareWriteSerializer(serializers.Serializer):
+    recipient = serializers.IntegerField(required=True)
+    permission = serializers.ChoiceField(choices=DocumentShare.Permission.choices)
+    expires_at = serializers.DateTimeField(required=False, allow_null=True)
+
+    def validate_recipient(self, value):
+        try:
+            user = User.objects.get(pk=value, role=User.Role.EMPLOYEE, status=User.Status.ACTIVE, is_active=True)
+        except User.DoesNotExist:
+            raise serializers.ValidationError("Recipient must be an active employee.")
+        document = self.context["document"]
+        if user.pk == document.owner_id:
+            raise serializers.ValidationError("You cannot share a document with its owner.")
+        return user
+
+    def validate_expires_at(self, value):
+        from django.utils import timezone
+        if value is not None and value <= timezone.now():
+            raise serializers.ValidationError("Expiry must be in the future.")
+        return value
+
+
+class EmployeeNotificationSerializer(serializers.ModelSerializer):
+    document_id = serializers.UUIDField(source="document.id", read_only=True, allow_null=True)
+
+    class Meta:
+        model = EmployeeNotification
+        fields = ["id", "document_id", "message", "is_read", "created_at", "read_at"]
+        read_only_fields = fields

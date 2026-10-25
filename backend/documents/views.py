@@ -32,13 +32,16 @@ from rest_framework.views import APIView
 from accounts.permissions import IsActiveUser
 from auditlog.helpers import log_event
 from auditlog.models import AuditEvent
-from documents.models import Document, Folder
+from documents.models import Document, DocumentShare, EmployeeNotification, Folder
 from documents.permissions import IsEmployee
 from documents.serializers import (
     DocumentDetailSerializer,
     DocumentListSerializer,
     DocumentMetadataUpdateSerializer,
+    DocumentShareSerializer,
+    DocumentShareWriteSerializer,
     DocumentUploadSerializer,
+    EmployeeNotificationSerializer,
     FolderSerializer,
 )
 from documents.storage import PrivateDocumentStorage, StorageError, get_user_storage_usage
@@ -47,6 +50,27 @@ from documents.validators import sanitize_filename, validate_document_upload
 logger = logging.getLogger("documents")
 
 _EMPLOYEE_PERMISSIONS = [IsAuthenticated, IsActiveUser, IsEmployee]
+
+
+def _active_share(document, user):
+    """Return a current grant for user, without leaking whether any other grant exists."""
+    return document.shares.filter(
+        recipient=user,
+    ).filter(Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())).first()
+
+
+def _can_access(document, user):
+    return document.owner_id == user.id or _active_share(document, user)
+
+
+def _can_download(document, user):
+    if document.owner_id == user.id:
+        return True
+    share = _active_share(document, user)
+    return bool(share and share.permission in {
+        DocumentShare.Permission.DOWNLOAD,
+        DocumentShare.Permission.EDIT,
+    })
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -356,11 +380,11 @@ class DocumentDetailView(APIView):
     permission_classes = _EMPLOYEE_PERMISSIONS
 
     def _get_document(self, pk, user, include_deleted=False):
-        qs = Document.objects.filter(owner=user, pk=pk)
+        qs = Document.objects.filter(pk=pk)
         if not include_deleted:
             qs = qs.exclude(status=Document.Status.DELETED)
         doc = qs.first()
-        if not doc:
+        if not doc or not _can_access(doc, user):
             raise Http404
         return doc
 
@@ -383,8 +407,15 @@ class DocumentDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        share = _active_share(doc, request.user)
+        if doc.owner_id != request.user.id and (not share or share.permission != DocumentShare.Permission.EDIT):
+            return Response({"detail": "Edit permission is required to update this document."}, status=status.HTTP_403_FORBIDDEN)
+        # A recipient with edit access may correct title/description but cannot reorganize another owner's files.
+        if doc.owner_id != request.user.id and "folder" in request.data:
+            return Response({"detail": "Only the owner can move a shared document."}, status=status.HTTP_403_FORBIDDEN)
+
         serializer = DocumentMetadataUpdateSerializer(
-            doc, data=request.data, partial=True, context={"request": request}
+            doc, data=request.data, partial=True, context={"request": request, "owner": doc.owner}
         )
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -416,12 +447,8 @@ class DocumentDownloadView(APIView):
     permission_classes = _EMPLOYEE_PERMISSIONS
 
     def get(self, request, pk):
-        doc = Document.objects.filter(
-            owner=request.user,
-            pk=pk,
-            status=Document.Status.ACTIVE,
-        ).first()
-        if not doc:
+        doc = Document.objects.filter(pk=pk, status=Document.Status.ACTIVE).first()
+        if not doc or not _can_download(doc, request.user):
             raise Http404
 
         storage = PrivateDocumentStorage()
@@ -461,6 +488,260 @@ class DocumentDownloadView(APIView):
             f'attachment; filename="{doc.name}"'
         )
         return response
+
+
+class DocumentViewFileView(APIView):
+    """Secure inline original-file view for browser-previewable documents."""
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def get(self, request, pk):
+        doc = Document.objects.filter(pk=pk, status=Document.Status.ACTIVE).first()
+        if not doc or not _can_access(doc, request.user):
+            raise Http404
+        storage = PrivateDocumentStorage()
+        if not storage.exists(doc.storage_key):
+            logger.error("Storage file missing for inline view pk=%s", pk)
+            return Response({"detail": "Document file is not available. Please contact support."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        log_event(actor=request.user, action=AuditEvent.Action.DOCUMENT_VIEW, target=doc, request=request, fail_closed=False)
+        response = FileResponse(storage.open(doc.storage_key), as_attachment=False, filename=doc.name, content_type=_file_type_to_mime(doc.file_type))
+        response["X-Content-Type-Options"] = "nosniff"
+        response["Content-Disposition"] = f'inline; filename="{doc.name}"'
+        return response
+
+
+class DocumentStorageUsageView(APIView):
+    """Return only the caller's quota allocation and current active/archive usage."""
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def get(self, request):
+        try:
+            from systemsettings.services import get_system_settings
+            quota = get_system_settings().user_storage_quota_mb * 1024 * 1024
+        except Exception:
+            quota = settings.USER_STORAGE_QUOTA_BYTES
+        used = get_user_storage_usage(request.user)
+        return Response({"used_bytes": used, "quota_bytes": quota, "remaining_bytes": max(0, quota - used)})
+
+
+class ShareRecipientListView(APIView):
+    """List active employee accounts suitable for a share recipient picker."""
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def get(self, request):
+        from accounts.models import User
+        users = User.objects.filter(
+            role=User.Role.EMPLOYEE,
+            status=User.Status.ACTIVE,
+            is_active=True,
+        ).exclude(pk=request.user.pk).order_by("username")
+        return Response([
+            {"id": user.id, "username": user.username, "display_name": user.get_full_name() or user.username, "email": user.email}
+            for user in users
+        ])
+
+
+class EmployeeDocumentActivityView(APIView):
+    """Return the caller's persisted audit events, never another employee's history."""
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def get(self, request):
+        events = AuditEvent.objects.filter(actor=request.user).order_by("-timestamp")[:100]
+        document_ids = [
+            event.target_id
+            for event in events
+            if (event.target_type or "").lower() == "documents.document" and event.target_id
+        ]
+        document_names = {
+            str(doc.id): doc.name
+            for doc in Document.objects.filter(id__in=document_ids)
+        }
+        return Response({"results": [
+            {
+                "id": event.id,
+                "action": event.action,
+                "action_label": event.get_action_display(),
+                "timestamp": event.timestamp,
+                "target_type": event.target_type,
+                "target_id": event.target_id,
+                "document_name": document_names.get(event.target_id),
+                "outcome": "Failed" if event.action in {AuditEvent.Action.LOGIN_FAILED, AuditEvent.Action.MFA_LOGIN_FAILED} else "Success",
+            }
+            for event in events
+        ]})
+
+
+class EmployeeNotificationListView(APIView):
+    """Return only the authenticated employee's persisted notifications."""
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def get(self, request):
+        notifications = EmployeeNotification.objects.filter(recipient=request.user).select_related("document")[:100]
+        return Response({"results": EmployeeNotificationSerializer(notifications, many=True).data})
+
+
+class EmployeeNotificationReadView(APIView):
+    """Mark one inbox item as read without exposing another employee's items."""
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def post(self, request, pk):
+        notification = EmployeeNotification.objects.filter(pk=pk, recipient=request.user).first()
+        if not notification:
+            raise Http404
+        if not notification.is_read:
+            notification.is_read = True
+            notification.read_at = timezone.now()
+            notification.save(update_fields=["is_read", "read_at"])
+        return Response(EmployeeNotificationSerializer(notification).data)
+
+
+class EmployeeNotificationReadAllView(APIView):
+    """Mark the caller's unread inbox items as read."""
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def post(self, request):
+        EmployeeNotification.objects.filter(recipient=request.user, is_read=False).update(
+            is_read=True, read_at=timezone.now()
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SharedDocumentListView(APIView):
+    """List documents granted to the caller by another active employee."""
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def get(self, request):
+        shares = DocumentShare.objects.select_related("document", "document__owner").filter(
+            recipient=request.user,
+            document__status=Document.Status.ACTIVE,
+        ).exclude(document__owner=request.user).filter(
+            Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
+        )
+        results = []
+        for share in shares:
+            data = DocumentListSerializer(share.document).data
+            data.update({
+                "owner_name": share.document.owner.get_full_name() or share.document.owner.username,
+                "owner_username": share.document.owner.username,
+                "owner_email": share.document.owner.email,
+                "shared_at": share.created_at,
+                "permission": share.permission,
+                "expires_at": share.expires_at,
+                "share_id": share.id,
+            })
+            results.append(data)
+        return Response({"count": len(results), "results": results})
+
+
+class OwnedDocumentShareListView(APIView):
+    """List the caller's grants in one request for the Employee workspace."""
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def get(self, request):
+        shares = DocumentShare.objects.filter(
+            document__owner=request.user,
+            document__status=Document.Status.ACTIVE,
+        ).exclude(
+            recipient=request.user,
+        ).select_related("document", "recipient").order_by("-created_at")
+        return Response(DocumentShareSerializer(shares, many=True).data)
+
+
+class DocumentShareListCreateView(APIView):
+    permission_classes = _EMPLOYEE_PERMISSIONS
+
+    def _get_document(self, pk, user):
+        doc = Document.objects.filter(pk=pk, status=Document.Status.ACTIVE).first()
+        if not doc or not _can_access(doc, user):
+            raise Http404
+        return doc
+
+    def _get_owned_document(self, pk, user):
+        doc = Document.objects.filter(pk=pk, owner=user, status=Document.Status.ACTIVE).first()
+        if not doc:
+            raise Http404
+        return doc
+
+    def get(self, request, pk):
+        doc = self._get_document(pk, request.user)
+        # Self-shares are rejected on creation. Exclude any legacy records so
+        # they cannot be reported as an active grant after a safe ownership
+        # migration of demonstration data.
+        shares = doc.shares.exclude(recipient=doc.owner).select_related("recipient")
+        return Response(DocumentShareSerializer(shares, many=True).data)
+
+    def post(self, request, pk):
+        doc = self._get_owned_document(pk, request.user)
+        serializer = DocumentShareWriteSerializer(data=request.data, context={"document": doc})
+        if not serializer.is_valid():
+            return Response({"detail": "Invalid share.", "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+        with transaction.atomic():
+            share, created = DocumentShare.objects.update_or_create(
+                document=doc,
+                recipient=data["recipient"],
+                defaults={"permission": data["permission"], "expires_at": data.get("expires_at")},
+            )
+            EmployeeNotification.objects.update_or_create(
+                event_key=f"share:{doc.id}:{share.recipient_id}",
+                defaults={
+                    "recipient": share.recipient,
+                    "document": doc,
+                    "message": f"{request.user.get_full_name() or request.user.username} shared {doc.name} with you ({share.get_permission_display()}).",
+                    "is_read": False,
+                    "read_at": None,
+                },
+            )
+            log_event(actor=request.user, action=AuditEvent.Action.DOCUMENT_SHARE if created else AuditEvent.Action.DOCUMENT_SHARE_UPDATE, target=doc, request=request, metadata={"status": share.permission}, fail_closed=True)
+        return Response(DocumentShareSerializer(share).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class DocumentShareDetailView(DocumentShareListCreateView):
+    def _get_share(self, pk, share_id, user):
+        doc = self._get_owned_document(pk, user)
+        share = doc.shares.filter(pk=share_id).select_related("recipient").first()
+        if not share:
+            raise Http404
+        return doc, share
+
+    def patch(self, request, pk, share_id):
+        doc, share = self._get_share(pk, share_id, request.user)
+        serializer = DocumentShareWriteSerializer(data={**request.data, "recipient": share.recipient_id}, partial=True, context={"document": doc})
+        if not serializer.is_valid():
+            return Response({"detail": "Invalid share.", "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            share.permission = serializer.validated_data.get("permission", share.permission)
+            share.expires_at = serializer.validated_data.get("expires_at", share.expires_at)
+            share.save(update_fields=["permission", "expires_at", "updated_at"])
+            EmployeeNotification.objects.update_or_create(
+                event_key=f"share:{doc.id}:{share.recipient_id}",
+                defaults={
+                    "recipient": share.recipient,
+                    "document": doc,
+                    "message": f"Access to {doc.name} was updated to {share.get_permission_display()}.",
+                    "is_read": False,
+                    "read_at": None,
+                },
+            )
+            log_event(actor=request.user, action=AuditEvent.Action.DOCUMENT_SHARE_UPDATE, target=doc, request=request, metadata={"status": share.permission}, fail_closed=True)
+        return Response(DocumentShareSerializer(share).data)
+
+    def delete(self, request, pk, share_id):
+        doc, share = self._get_share(pk, share_id, request.user)
+        with transaction.atomic():
+            recipient = share.recipient
+            share.delete()
+            EmployeeNotification.objects.update_or_create(
+                event_key=f"share-revoked:{doc.id}:{recipient.id}",
+                defaults={
+                    "recipient": recipient,
+                    "document": doc,
+                    "message": f"Your access to {doc.name} was revoked.",
+                    "is_read": False,
+                    "read_at": None,
+                },
+            )
+            log_event(actor=request.user, action=AuditEvent.Action.DOCUMENT_SHARE_REVOKE, target=doc, request=request, fail_closed=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class DocumentArchiveView(APIView):
@@ -567,18 +848,6 @@ class DocumentPurgeView(APIView):
         ).first()
         if not doc:
             raise Http404
-
-        # Legal hold enforcement — block all purges when active
-        try:
-            from systemsettings.services import get_system_settings
-            sys_settings = get_system_settings()
-            if sys_settings.legal_hold_enabled:
-                return Response(
-                    {"detail": "Document purging is blocked: a legal hold is currently active."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        except Exception:
-            pass  # If settings table isn't available, allow purge (fail-open for this check)
 
         if doc.purged_at is not None:
             return Response(

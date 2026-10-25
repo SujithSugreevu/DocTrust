@@ -5,8 +5,9 @@
 DocTrust is a secure document management system featuring strict role separation (ADMIN vs EMPLOYEE), encapsulated private storage, and a fail-closed immutable audit trail.
 
 - **Base URL:** `http://localhost:8000/api` (or proxied via Vite dev server `/api`)
-- **Authentication:** Session-based authentication via Django session cookies (`sessionid`)
+- **Authentication:** Per-tab Django database sessions. Successful login returns a server-issued `tab_session_key`, which clients send in the `X-DocTrust-Session` header on authenticated requests. The Vite frontend stores this credential in that tab's `sessionStorage`; Django session cookies alone do not authenticate REST API requests.
 - **CSRF Protection:** Required for all state-mutating requests (`POST`, `PATCH`, `DELETE`, `PUT`) via the `X-CSRFToken` header.
+- **CSRF Cookie:** `GET /api/auth/csrf/` continues to set the shared `csrftoken` cookie; it is not an authentication credential.
 - **Roles:**
   - `EMPLOYEE`: Access to private document & folder workspace. Document owner.
   - `ADMIN`: Access to user management and audit log review. Explicitly forbidden (403) from accessing employee documents and metadata.
@@ -32,22 +33,20 @@ Authenticates user credentials.
 - **Response (200 OK):**
   ```json
   {
-    "detail": "Login successful.",
-    "user": {
-      "id": 1,
-      "username": "employee_demo",
-      "email": "employee@example.com",
-      "role": "EMPLOYEE",
-      "status": "ACTIVE"
-    }
+    "id": 1,
+    "username": "employee_demo",
+    "email": "employee@example.com",
+    "role": "EMPLOYEE",
+    "status": "ACTIVE",
+    "tab_session_key": "<server-issued session key>"
   }
   ```
 
 ### `POST /api/auth/logout/`
-Terminates the session and invalidates the session cookie.
+Revokes the session identified by the current tab's `X-DocTrust-Session` header. Other tabs' sessions remain valid.
 
 ### `GET /api/auth/me/`
-Retrieves the currently authenticated user's profile.
+Retrieves the currently authenticated user's profile. Requires the current tab's `X-DocTrust-Session` header.
 
 ---
 

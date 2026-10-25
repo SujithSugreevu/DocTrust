@@ -223,3 +223,82 @@ class Document(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.status}) [Owner: {self.owner_id}]"
+
+
+class DocumentShare(models.Model):
+    """A time-bound, document-level grant made by a document owner."""
+
+    class Permission(models.TextChoices):
+        VIEW = "VIEW", "View"
+        DOWNLOAD = "DOWNLOAD", "Download"
+        EDIT = "EDIT", "Edit"
+
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="shares",
+    )
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="document_shares_received",
+    )
+    permission = models.CharField(max_length=10, choices=Permission.choices)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["document", "recipient"],
+                name="unique_document_share_recipient",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["recipient", "-created_at"], name="share_recipient_created_idx"),
+        ]
+
+    @property
+    def is_active(self):
+        from django.utils import timezone
+        return self.expires_at is None or self.expires_at > timezone.now()
+
+    def __str__(self):
+        return f"{self.document_id} shared with {self.recipient_id} ({self.permission})"
+
+
+class EmployeeNotification(models.Model):
+    """A persisted, per-employee inbox item for document-related events."""
+
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="employee_notifications",
+    )
+    document = models.ForeignKey(
+        Document,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="notifications",
+    )
+    message = models.CharField(max_length=300)
+    event_key = models.CharField(
+        max_length=120,
+        unique=True,
+        help_text="Stable idempotency key for system-generated notifications.",
+    )
+    is_read = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["recipient", "is_read", "-created_at"], name="employee_notice_inbox_idx"),
+        ]
+
+    def __str__(self):
+        return f"Notification for {self.recipient_id}: {self.message[:60]}"

@@ -61,18 +61,6 @@ CAPABILITY_STATUS = {
         "provider": "Built-in (magic bytes, PDF script scanner, Office ZIP/macro inspector)",
         "external_scanner": False,
     },
-    "unusual_download_detection": {
-        "available": False,
-        "reason": "Download anomaly detection logic is not yet implemented.",
-    },
-    "backup_monitoring": {
-        "available": False,
-        "reason": "No backup monitoring service is currently configured.",
-    },
-    "printing_enforcement": {
-        "available": False,
-        "reason": "Server-side print restriction cannot be enforced; this is an advisory setting only.",
-    },
 }
 
 
@@ -118,10 +106,6 @@ class SystemSettingsDetailView(APIView):
         # Snapshot old state for audit
         old_snapshot = SystemSettingsSerializer(settings_obj).data
 
-        # Check for maintenance mode toggle — requires special audit action
-        maintenance_toggled = "maintenance_mode" in changed_fields
-        new_maintenance = serializer.validated_data.get("maintenance_mode")
-
         try:
             with transaction.atomic():
                 updated = serializer.save()
@@ -140,20 +124,6 @@ class SystemSettingsDetailView(APIView):
                     metadata=audit_metadata,
                     fail_closed=True,
                 )
-
-                # Additional audit for maintenance mode toggle
-                if maintenance_toggled:
-                    log_event(
-                        actor=request.user,
-                        action=AuditEvent.Action.MAINTENANCE_MODE_TOGGLE,
-                        target=updated,
-                        request=request,
-                        metadata={
-                            "maintenance_mode": str(new_maintenance).lower(),
-                            "setting_name": "maintenance_mode",
-                        },
-                        fail_closed=True,
-                    )
         except Exception as exc:
             logger.error("Failed to update system settings: %s", exc)
             return Response(

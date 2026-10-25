@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   ShieldCheck,
   LockKeyhole,
@@ -23,6 +23,7 @@ import {
 
 export default function Login() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('Administrator')
@@ -50,21 +51,33 @@ export default function Login() {
   const [forgotMessage, setForgotMessage] = useState('')
   const [forgotError, setForgotError] = useState('')
 
+  const navigateForRole = useCallback((userRole) => {
+    const rolePrefix = userRole === 'ADMIN' ? '/admin/' : '/employee/'
+    const defaultRoute = userRole === 'ADMIN' ? '/admin/dashboard' : '/employee/dashboard'
+    const destination = location.state?.from
+    navigate(
+      typeof destination === 'string' && destination.startsWith(rolePrefix)
+        ? destination
+        : defaultRoute,
+      { replace: true },
+    )
+  }, [location.state, navigate])
+
   useEffect(() => {
     let active = true
     getCurrentUser().then((user) => {
       if (active && user) {
-        if (user.role === 'ADMIN') {
-          navigate('/admin/dashboard', { replace: true })
-        } else {
-          navigate('/employee/dashboard', { replace: true })
-        }
+        navigateForRole(user.role)
+      }
+    }).catch((err) => {
+      if (active) {
+        setError(`Unable to verify your existing session. ${err.message}`)
       }
     })
     return () => {
       active = false
     }
-  }, [navigate])
+  }, [navigateForRole])
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -93,11 +106,7 @@ export default function Login() {
       }
 
       // Redirect according to verified user role from backend
-      if (res.role === 'ADMIN') {
-        navigate('/admin/dashboard')
-      } else {
-        navigate('/employee/dashboard')
-      }
+      navigateForRole(res.role)
     } catch (err) {
       setError(err.message || 'Invalid username/email or password.')
     } finally {
@@ -132,11 +141,7 @@ export default function Login() {
         mfaToken: mfaChallenge.mfaToken,
         code: mfaCode.trim(),
       })
-      if (verifiedUser.role === 'ADMIN') {
-        navigate('/admin/dashboard')
-      } else {
-        navigate('/employee/dashboard')
-      }
+      navigateForRole(verifiedUser.role)
     } catch (err) {
       setMfaError(err.message || 'Verification failed. Please check the code and try again.')
     } finally {
@@ -169,11 +174,7 @@ export default function Login() {
   }
 
   function handleFinishMandatorySetup() {
-    if (mfaVerifiedUser?.role === 'ADMIN') {
-      navigate('/admin/dashboard')
-    } else {
-      navigate('/employee/dashboard')
-    }
+    navigateForRole(mfaVerifiedUser?.role)
   }
 
   function handleCopyMfaRecoveryCodes() {

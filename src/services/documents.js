@@ -5,6 +5,7 @@
  */
 
 import { getCsrfToken } from './auth.js'
+import { fetchWithTabSession } from './tabSession.js'
 
 const BASE = '/api/documents'
 
@@ -13,14 +14,19 @@ const BASE = '/api/documents'
  * Throws an Error with a user-readable message on non-2xx responses.
  */
 async function apiFetch(url, options = {}) {
-  const csrfToken = await getCsrfToken()
-  const response = await fetch(url, {
+  const method = (options.method || 'GET').toUpperCase()
+  const requiresCsrf = !['GET', 'HEAD', 'OPTIONS'].includes(method)
+  const csrfToken = requiresCsrf ? await getCsrfToken({ forceRefresh: true }) : ''
+  if (requiresCsrf && !csrfToken) {
+    throw new Error('Unable to establish a secure session. Refresh the page and try again.')
+  }
+  const response = await fetchWithTabSession(url, {
+    ...options,
     credentials: 'include',
     headers: {
-      'X-CSRFToken': csrfToken,
       ...options.headers,
+      ...(requiresCsrf ? { 'X-CSRFToken': csrfToken } : {}),
     },
-    ...options,
   })
 
   if (response.status === 204) return null
@@ -113,30 +119,16 @@ export async function listDocuments(params = {}) {
  * @param {function} onProgress Optional callback (not supported by fetch; reserved)
  */
 export async function uploadDocument(file, meta = {}) {
-  const csrfToken = await getCsrfToken()
   const body = new FormData()
   body.append('file', file)
   if (meta.name) body.append('name', meta.name)
   if (meta.description) body.append('description', meta.description)
   if (meta.folder) body.append('folder', meta.folder)
 
-  const response = await fetch(`${BASE}/`, {
+  return apiFetch(`${BASE}/`, {
     method: 'POST',
-    credentials: 'include',
-    headers: { 'X-CSRFToken': csrfToken },
     body,
   })
-
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) {
-    const message =
-      data.detail ||
-      (data.errors && Object.values(data.errors).flat().join(' ')) ||
-      Object.values(data).flat().join(' ') ||
-      `Upload failed (${response.status})`
-    throw new Error(message)
-  }
-  return data
 }
 
 /**
@@ -165,16 +157,105 @@ export async function updateDocument(id, data) {
  * Navigates to the download URL directly so the browser handles the stream.
  * @param {object} doc  Document object with id and name
  */
-export function downloadDocument(doc) {
-  // We use a temporary anchor to trigger the download.
-  // The session cookie is sent automatically.
+export async function downloadDocument(doc) {
+  const response = await fetchWithTabSession(`${BASE}/${doc.id}/download/`, {
+    credentials: 'include',
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.detail || `Document download failed (HTTP ${response.status}).`)
+  }
+
+  const objectUrl = URL.createObjectURL(await response.blob())
   const anchor = window.document.createElement('a')
-  anchor.href = `${BASE}/${doc.id}/download/`
+  anchor.href = objectUrl
   anchor.download = doc.name
   anchor.style.display = 'none'
   window.document.body.appendChild(anchor)
   anchor.click()
   window.document.body.removeChild(anchor)
+  URL.revokeObjectURL(objectUrl)
+}
+
+/** Open the original document through the authorized inline-view endpoint. */
+export async function viewDocument(doc) {
+  const popup = typeof window !== 'undefined' && window.open ? window.open('', '_blank') : null
+  if (popup) {
+    popup.opener = null
+  }
+  try {
+    const response = await fetchWithTabSession(`${BASE}/${doc.id}/view/`, {
+      credentials: 'include',
+    })
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.detail || `Document preview failed (HTTP ${response.status}).`)
+    }
+    const blob = await response.blob()
+    if (popup) {
+      popup.location.href = URL.createObjectURL(blob)
+    }
+    return blob
+  } catch (error) {
+    if (popup) popup.close()
+    throw error
+  }
+}
+
+export async function getStorageUsage() {
+  return apiFetch(`${BASE}/storage/`)
+}
+
+export async function listSharedDocuments() {
+  return apiFetch(`${BASE}/shared/`)
+}
+
+export async function listShareRecipients() {
+  return apiFetch(`${BASE}/share-recipients/`)
+}
+
+export async function listDocumentShares(id) {
+  return apiFetch(`${BASE}/${id}/shares/`)
+}
+
+/** List all non-self access grants on the current employee's active documents. */
+export async function listOwnedDocumentShares() {
+  return apiFetch(`${BASE}/owned-shares/`)
+}
+
+export async function createDocumentShare(id, data) {
+  return apiFetch(`${BASE}/${id}/shares/`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  })
+}
+
+export async function updateDocumentShare(id, shareId, data) {
+  return apiFetch(`${BASE}/${id}/shares/${shareId}/`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  })
+}
+
+export async function revokeDocumentShare(id, shareId) {
+  return apiFetch(`${BASE}/${id}/shares/${shareId}/`, { method: 'DELETE' })
+}
+
+export async function listEmployeeActivity() {
+  return apiFetch(`${BASE}/activity/`)
+}
+
+/** Return the authenticated employee's persisted notification inbox. */
+export async function listEmployeeNotifications() {
+  return apiFetch(`${BASE}/notifications/`)
+}
+
+/** Mark one notification as read. */
+export async function markEmployeeNotificationRead(id) {
+  return apiFetch(`${BASE}/notifications/${id}/read/`, { method: 'POST' })
+}
+
+/** Mark every unread notification for the signed-in employee as read. */
+export async function markAllEmployeeNotificationsRead() {
+  return apiFetch(`${BASE}/notifications/read-all/`, { method: 'POST' })
 }
 
 /**

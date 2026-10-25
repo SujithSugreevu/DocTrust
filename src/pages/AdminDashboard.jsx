@@ -1,5 +1,5 @@
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity,
@@ -22,6 +22,7 @@ import {
   ExternalLink,
   Clock,
 } from 'lucide-react'
+import { getDashboardStats } from '../services/auditlog.js'
 
 const routes = {
   Dashboard: '/admin/dashboard',
@@ -47,59 +48,11 @@ const navigation = [
   { label: 'Logout', icon: LogOut },
 ]
 
-const stats = [
-  { label: 'Registered Users', value: 152, icon: Users, color: 'blue', route: '/admin/users', description: 'Manage registered accounts' },
-  { label: 'Total Documents', value: 486, icon: FileText, color: 'teal', route: '/admin/documents', description: 'Review document records' },
-  { label: 'Employees', value: 144, icon: Folder, color: 'amber', route: '/admin/users?role=Employee', description: 'Manage employee accounts' },
-  { label: 'Administrators', value: 8, icon: Shield, color: 'rose', route: '/admin/users', description: 'Review administrator accounts' },
-]
-
-const activityByRange = {
-  '7 days': [
-    { day: 'Tue', value: 34 },
-    { day: 'Wed', value: 48 },
-    { day: 'Thu', value: 41 },
-    { day: 'Fri', value: 62 },
-    { day: 'Sat', value: 55 },
-    { day: 'Sun', value: 29 },
-    { day: 'Mon', value: 44 },
-  ],
-  '30 days': [
-    { day: 'Week 1', value: 145 },
-    { day: 'Week 2', value: 182 },
-    { day: 'Week 3', value: 158 },
-    { day: 'Week 4', value: 210 },
-  ],
-  '90 days': [
-    { day: 'Month 1', value: 510 },
-    { day: 'Month 2', value: 625 },
-    { day: 'Month 3', value: 580 },
-  ],
-}
-
-const initialActivities = [
-  { id: 1, time: '20 Oct, 10:24', user: 'John Doe', action: 'Uploaded', document: 'Project_Report.pdf', result: 'Success', details: 'The document was uploaded successfully.', category: 'Document' },
-  { id: 2, time: '20 Oct, 09:18', user: 'Sara Smith', action: 'Downloaded', document: 'Design_Specs.docx', result: 'Success', details: 'A permitted document download was recorded.', category: 'Document' },
-  { id: 3, time: '19 Oct, 16:02', user: 'Mike Brown', action: 'Edited', document: 'Financial_Plan.xlsx', result: 'Success', details: 'The document was edited by an authorized user.', category: 'Document' },
-  { id: 4, time: '19 Oct, 14:40', user: 'Anna Green', action: 'Viewed', document: 'Product_Manual.pdf', result: 'Denied', details: 'Access was denied because the user did not have permission.', category: 'Security' },
-]
-
-const permissionChanges = [
-  { id: 1, document: 'Project_Report.pdf', status: 'Granted', permission: 'Read', user: 'Sara Smith', owner: 'John Doe', color: 'teal', time: '20 Oct, 10:15' },
-  { id: 2, document: 'Design_Specs.docx', status: 'Updated', permission: 'Edit', user: 'Mike Brown', owner: 'John Doe', color: 'blue', time: '20 Oct, 09:40' },
-  { id: 3, document: 'Financial_Plan.xlsx', status: 'Revoked', permission: 'Edit', user: 'Anna Green', owner: 'Mike Brown', color: 'rose', time: '19 Oct, 16:20' },
-]
-
-const initialNotifications = [
-  { id: 1, title: 'Repeated failed login attempts', message: 'Five failed login attempts were detected for one account.', time: '10 minutes ago', read: false, route: '/admin/security' },
-  { id: 2, title: 'Document access denied', message: 'A user attempted to open an unshared document.', time: '35 minutes ago', read: false, route: '/admin/security' },
-  { id: 3, title: 'Permission updated', message: 'A document permission was changed.', time: '1 hour ago', read: false, route: '/admin/permissions' },
-]
-
-const initialAlerts = [
-  { id: 1, title: 'Repeated failed login attempts', severity: 'High', status: 'Open', time: '20 Oct 2026, 09:15', details: 'Five unsuccessful login attempts were detected for the same account. Review the account activity and sign-in history.' },
-  { id: 2, title: 'Access to an unshared file', severity: 'Medium', status: 'Review', time: '20 Oct 2026, 08:40', details: 'A user attempted to access a document without an applicable permission.' },
-  { id: 3, title: 'Disallowed file type', severity: 'Medium', status: 'Review', time: '19 Oct 2026, 16:42', details: 'A file upload attempt used a file type that is not permitted in this demo.' },
+const statCards = [
+  { key: 'registered_users', label: 'Registered Users', icon: Users, color: 'blue', route: '/admin/users', description: 'Manage registered accounts' },
+  { key: 'total_documents', label: 'Total Documents', icon: FileText, color: 'teal', route: '/admin/documents', description: 'Review document records' },
+  { key: 'employees', label: 'Employees', icon: Folder, color: 'amber', route: '/admin/users?role=Employee', description: 'Manage employee accounts' },
+  { key: 'administrators', label: 'Administrators', icon: Shield, color: 'rose', route: '/admin/users', description: 'Review administrator accounts' },
 ]
 
 function SectionCard({ title, icon: Icon, children, className = '' }) {
@@ -219,27 +172,58 @@ function DetailDialog({ title, data, onClose }) {
 
 export default function AdminDashboard() {
   const navigate = useNavigate()
-  const [notifications, setNotifications] = useState(initialNotifications)
+  const [dashboardData, setDashboardData] = useState(null)
+  const [dashboardError, setDashboardError] = useState('')
+  const [readNotifications, setReadNotifications] = useState([])
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [range, setRange] = useState('7 days')
-  const [activities] = useState(initialActivities)
   const [selectedActivity, setSelectedActivity] = useState(null)
   const [selectedPermission, setSelectedPermission] = useState(null)
   const [selectedAlert, setSelectedAlert] = useState(null)
   const [notice, setNotice] = useState('')
+  const notifications = (dashboardData?.alerts || []).map((alert) => ({
+    ...alert,
+    message: alert.details,
+    route: '/admin/security',
+    read: readNotifications.includes(alert.id),
+  }))
+  const activities = dashboardData?.activities || []
+  const permissionChanges = activities
+    .filter((item) => /permission|share/i.test(item.action))
+    .map((item) => ({
+      ...item,
+      status: /revok/i.test(item.action) ? 'Revoked' : /shared/i.test(item.action) ? 'Granted' : 'Updated',
+      permission: item.action,
+      color: /revok/i.test(item.action) ? 'rose' : /shared/i.test(item.action) ? 'teal' : 'blue',
+    }))
 
   const unreadCount = useMemo(
     () => notifications.filter((item) => !item.read).length,
     [notifications],
   )
 
-  const chartData = activityByRange[range]
+  useEffect(() => {
+    let active = true
+    getDashboardStats(range)
+      .then((data) => {
+        if (active) {
+          setDashboardData(data)
+          setDashboardError('')
+        }
+      })
+      .catch((error) => {
+        if (active) setDashboardError(error.message || 'Unable to load dashboard data.')
+      })
+    return () => {
+      active = false
+    }
+  }, [range])
+
+  const chartData = dashboardData?.chart_data || []
   const maxChartValue = Math.max(...chartData.map((item) => item.value), 1)
 
   function markNotificationRead(id) {
-    setNotifications((current) =>
-      current.map((item) => item.id === id ? { ...item, read: true } : item),
-    )
+    setReadNotifications((current) => current.includes(id) ? current : [...current, id])
   }
 
   function openNotification(item) {
@@ -249,8 +233,8 @@ export default function AdminDashboard() {
   }
 
   function markAllNotificationsRead() {
-    setNotifications((current) => current.map((item) => ({ ...item, read: true })))
-    setNotice('All notifications have been marked as read in this demo.')
+    setReadNotifications(notifications.map((item) => item.id))
+    setNotice('Alerts marked as read for this session.')
   }
 
   function openStat(stat) {
@@ -352,12 +336,18 @@ export default function AdminDashboard() {
             <div className="hidden items-center gap-2 sm:flex">
               <span className="flex size-9 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-800">AD</span>
               <div className="text-xs">
-                <p className="font-bold">Admin User</p>
+                <p className="font-bold">Administrator</p>
                 <p className="text-violet-800">Administrator</p>
               </div>
             </div>
           </div>
         </header>
+
+        {dashboardError && (
+          <div role="alert" className="mb-4 rounded-xl border border-rose-200 bg-white px-4 py-3 text-sm text-rose-800">
+            {dashboardError}
+          </div>
+        )}
 
         {notice && (
           <div role="status" className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm text-emerald-900">
@@ -369,7 +359,8 @@ export default function AdminDashboard() {
         )}
 
         <section aria-label="System statistics" className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
-          {stats.map((stat) => {
+          {statCards.map((card) => {
+            const stat = { ...card, value: dashboardData?.stats?.[card.key] ?? '—' }
             const Icon = stat.icon
             const iconColors = {
               blue: 'bg-blue-100 text-blue-800',
@@ -403,7 +394,7 @@ export default function AdminDashboard() {
         <div className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.65fr_1fr]">
           <SectionCard title={`Document Activity, ${range}`} icon={Activity}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-slate-500">Sample activity counts for the selected period</p>
+              <p className="text-xs text-slate-500">Recorded activity for the selected period</p>
               <label className="flex items-center gap-2 text-xs font-semibold">
                 Period
                 <select
@@ -419,13 +410,16 @@ export default function AdminDashboard() {
             </div>
 
             <div className="flex h-44 items-end justify-around gap-3 border-b border-slate-200 px-2">
+              {dashboardData && chartData.length === 0 && (
+                <p className="w-full pb-8 text-center text-xs text-slate-500">No activity recorded for this period.</p>
+              )}
               {chartData.map(({ day, value }) => (
                 <div key={day} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1">
                   <span className="text-xs font-semibold">{value}</span>
                   <div
                     className="w-full max-w-12 rounded-t-md bg-emerald-700 transition-all duration-300 hover:bg-emerald-500"
                     style={{ height: `${Math.max((value / maxChartValue) * 65, 5)}%` }}
-                    title={`${value} sample activities`}
+                    title={`${value} recorded activities`}
                   />
                   <span className="pb-2 text-center text-[10px] text-slate-500">{day}</span>
                 </div>
@@ -435,7 +429,7 @@ export default function AdminDashboard() {
 
           <SectionCard title="Security Alerts" icon={TriangleAlert}>
             <div className="space-y-4 text-xs">
-              {initialAlerts.map((alert) => (
+              {(dashboardData?.alerts || []).map((alert) => (
                 <button
                   type="button"
                   key={alert.id}
@@ -515,6 +509,9 @@ export default function AdminDashboard() {
                     </td>
                   </tr>
                 ))}
+                {activities.length === 0 && (
+                  <tr><td colSpan="6" className="px-2 py-8 text-center text-slate-500">No recorded activity.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -554,6 +551,9 @@ export default function AdminDashboard() {
                     </td>
                   </tr>
                 ))}
+                {permissionChanges.length === 0 && (
+                  <tr><td colSpan="4" className="px-2 py-8 text-center text-slate-500">No permission changes recorded.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -566,10 +566,6 @@ export default function AdminDashboard() {
             <ShieldCheck size={14} className="mr-1 inline" /> View Permission Audit
           </button>
         </SectionCard>
-
-        <p className="mt-4 text-xs leading-relaxed text-slate-500">
-          Frontend demo: dashboard data is sample data. Changes are held in component state and are not saved to a backend.
-        </p>
       </div>
 
       <DetailDialog

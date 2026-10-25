@@ -1,5 +1,5 @@
 import json
-import secrets
+import time
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
@@ -10,6 +10,7 @@ from accounts.models import User
 from auditlog.models import AuditEvent
 from systemsettings.models import SystemSettings
 from systemsettings.services import invalidate_settings_cache
+from systemsettings.middleware import SessionIdleTimeoutMiddleware, SESSION_IDLE_TIMEOUT_SECONDS
 
 UserModel = get_user_model()
 
@@ -30,8 +31,7 @@ class SystemSettingsModelTestCase(TestCase):
         self.assertEqual(settings.app_name, "DocTrust")
         self.assertIn(".pdf", settings.allowed_file_types)
         self.assertEqual(settings.max_upload_size_mb, 50)
-        self.assertFalse(settings.maintenance_mode)
-        self.assertFalse(settings.legal_hold_enabled)
+        self.assertEqual(settings.failed_login_limit, 5)
 
     def test_save_always_enforces_id_one(self):
         settings = SystemSettings(pk=99, app_name="CustomTrust")
@@ -100,11 +100,11 @@ class SystemSettingsAPITestCase(TestCase):
 
     def test_admin_patch_updates_setting_and_logs_audit(self):
         self.client.force_authenticate(user=self.admin_user)
-        payload = {"app_name": "DocTrust Enterprise", "session_idle_timeout_minutes": 45}
+        payload = {"app_name": "DocTrust Enterprise", "failed_login_limit": 8}
         response = self.client.patch(self.url, data=json.dumps(payload), content_type="application/json")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.json()["app_name"], "DocTrust Enterprise")
-        self.assertEqual(response.json()["session_idle_timeout_minutes"], 45)
+        self.assertEqual(response.json()["failed_login_limit"], 8)
 
         # Verify audit event was logged
         audit = AuditEvent.objects.filter(action=AuditEvent.Action.SYSTEM_SETTINGS_UPDATE).order_by("-id").first()
@@ -114,11 +114,11 @@ class SystemSettingsAPITestCase(TestCase):
 
     def test_patch_rejects_invalid_values(self):
         self.client.force_authenticate(user=self.admin_user)
-        # session_idle_timeout_minutes must be >= 5
-        payload = {"session_idle_timeout_minutes": 2}
+        # failed_login_limit must be >= 3
+        payload = {"failed_login_limit": 1}
         response = self.client.patch(self.url, data=json.dumps(payload), content_type="application/json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("session_idle_timeout_minutes", response.json())
+        self.assertIn("failed_login_limit", response.json())
 
     def test_patch_rejects_unknown_fields(self):
         self.client.force_authenticate(user=self.admin_user)
@@ -126,15 +126,12 @@ class SystemSettingsAPITestCase(TestCase):
         response = self.client.patch(self.url, data=json.dumps(payload), content_type="application/json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_maintenance_mode_toggle_logs_special_audit(self):
+    def test_patch_rejects_removed_fields(self):
         self.client.force_authenticate(user=self.admin_user)
         payload = {"maintenance_mode": True}
         response = self.client.patch(self.url, data=json.dumps(payload), content_type="application/json")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-        audit = AuditEvent.objects.filter(action=AuditEvent.Action.MAINTENANCE_MODE_TOGGLE).first()
-        self.assertIsNotNone(audit)
-        self.assertEqual(audit.metadata.get("maintenance_mode"), "true")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("detail", response.json())
 
     def test_reset_restores_defaults_and_audits(self):
         self.client.force_authenticate(user=self.admin_user)
@@ -150,100 +147,48 @@ class SystemSettingsAPITestCase(TestCase):
         self.assertEqual(audit.actor, self.admin_user)
 
 
-class MaintenanceModeMiddlewareTestCase(TestCase):
-    """Test MaintenanceModeMiddleware behavior."""
+class SessionIdleTimeoutMiddlewareTestCase(TestCase):
+    """Test SessionIdleTimeoutMiddleware behavior."""
 
     def setUp(self):
-        invalidate_settings_cache()
-        SystemSettings.objects.all().delete()
-        self.client = APIClient()
+        self.middleware = SessionIdleTimeoutMiddleware(get_response=lambda r: None)
 
-        self.admin_user = UserModel.objects.create_user(
-            username="admin_maint",
-            email="admin_maint@doctrust.local",
-            password="SecureAdminPassword123!",
-            role=User.Role.ADMIN,
-            status=User.Status.ACTIVE,
+    def test_active_session_not_flushed(self):
+        class DummyRequest:
+            def __init__(self, user):
+                self.user = user
+                self.session = {"_last_activity": time.time() - 60}
+
+        user = UserModel.objects.create_user(
+            username="idle_test",
+            email="idle@doctrust.local",
+            password="SecurePassword123!",
         )
-        self.employee_user = UserModel.objects.create_user(
-            username="emp_maint",
-            email="emp_maint@doctrust.local",
-            password="SecureEmpPassword123!",
-            role=User.Role.EMPLOYEE,
-            status=User.Status.ACTIVE,
+        request = DummyRequest(user)
+        response = self.middleware.process_request(request)
+        self.assertIsNone(response)
+        self.assertIn("_last_activity", request.session)
+
+    def test_expired_session_flushed(self):
+        flushed = []
+
+        class DummySession(dict):
+            def flush(self):
+                flushed.append(True)
+                self.clear()
+
+        class DummyRequest:
+            def __init__(self, user):
+                self.user = user
+                self.session = DummySession({"_last_activity": time.time() - (SESSION_IDLE_TIMEOUT_SECONDS + 10)})
+
+        user = UserModel.objects.create_user(
+            username="idle_test2",
+            email="idle2@doctrust.local",
+            password="SecurePassword123!",
         )
-
-    def tearDown(self):
-        invalidate_settings_cache()
-
-    def test_non_admin_blocked_with_503_during_maintenance(self):
-        settings = SystemSettings.load()
-        settings.maintenance_mode = True
-        settings.save()
-        invalidate_settings_cache()
-
-        self.client.force_authenticate(user=self.employee_user)
-        response = self.client.get("/api/documents/")
-        self.assertEqual(response.status_code, 503)
-        self.assertTrue(response.json().get("maintenance"))
-
-    def test_admin_bypasses_maintenance(self):
-        settings = SystemSettings.load()
-        settings.maintenance_mode = True
-        settings.save()
-        invalidate_settings_cache()
-
-        self.client.force_authenticate(user=self.admin_user)
-        response = self.client.get(reverse("system-settings"))
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-    def test_exempt_paths_accessible_during_maintenance(self):
-        settings = SystemSettings.load()
-        settings.maintenance_mode = True
-        settings.save()
-        invalidate_settings_cache()
-
-        response = self.client.get("/api/health/")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-
-class LegalHoldEnforcementTestCase(TestCase):
-    """Test legal hold blocks purge operations."""
-
-    def setUp(self):
-        invalidate_settings_cache()
-        SystemSettings.objects.all().delete()
-        self.client = APIClient()
-
-        self.employee = UserModel.objects.create_user(
-            username="emp_legal",
-            email="emp_legal@doctrust.local",
-            password="SecureEmpPassword123!",
-            role=User.Role.EMPLOYEE,
-            status=User.Status.ACTIVE,
-        )
-
-    def tearDown(self):
-        invalidate_settings_cache()
-
-    def test_legal_hold_blocks_document_purge(self):
-        settings = SystemSettings.load()
-        settings.legal_hold_enabled = True
-        settings.save()
-        invalidate_settings_cache()
-
-        self.client.force_authenticate(user=self.employee)
-        from documents.models import Document
-        doc = Document.objects.create(
-            owner=self.employee,
-            name="Confidential.pdf",
-            original_filename="Confidential.pdf",
-            file_type="PDF",
-            size=1024,
-            sha256="e" * 64,
-            storage_key=secrets.token_hex(32),
-            status=Document.Status.DELETED,
-        )
-        response = self.client.post(f"/api/documents/{doc.id}/purge/")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("legal hold", response.json().get("detail", "").lower())
+        request = DummyRequest(user)
+        response = self.middleware.process_request(request)
+        self.assertIsNotNone(response)
+        self.assertEqual(response.status_code, 401)
+        self.assertTrue(len(flushed) > 0)

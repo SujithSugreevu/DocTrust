@@ -24,6 +24,17 @@ import {
   QrCode,
 } from 'lucide-react'
 import {
+  changePassword,
+  updateProfile,
+} from '../services/auth.js'
+import {
+  getActivitySummary,
+  getAuditEvents,
+  getDocumentOverview,
+  getSecurityAlerts,
+  resolveSecurityAlert,
+} from '../services/auditlog.js'
+import {
   logout,
   getCurrentUser,
   getTwoFactorStatus,
@@ -55,35 +66,6 @@ const iconMap = {
   Profile: UserRound,
   Logout: LogOut,
 }
-
-const documents = [
-  { id: 'DOC-1001', name: 'Project Proposal.pdf', owner: 'John Doe', type: 'PDF', status: 'Active', date: '20 Oct 2026', access: '3 users' },
-  { id: 'DOC-1002', name: 'Financial Report.xlsx', owner: 'Emma Davis', type: 'Spreadsheet', status: 'Restricted', date: '19 Oct 2026', access: '2 users' },
-  { id: 'DOC-1003', name: 'Team Guidelines.docx', owner: 'Tom Wilson', type: 'Document', status: 'Active', date: '18 Oct 2026', access: '5 users' },
-  { id: 'DOC-1004', name: 'Contract Draft.pdf', owner: 'Mia Taylor', type: 'PDF', status: 'Archived', date: '15 Oct 2026', access: '1 user' },
-  { id: 'DOC-1005', name: 'Product Roadmap.pdf', owner: 'John Doe', type: 'PDF', status: 'Active', date: '14 Oct 2026', access: '4 users' },
-]
-
-const activities = [
-  { date: '20 Oct 2026, 09:24', user: 'Admin User', action: 'Viewed user management', category: 'User Management', result: 'Success' },
-  { date: '20 Oct 2026, 09:10', user: 'John Doe', action: 'Uploaded Project Proposal.pdf', category: 'Document', result: 'Success' },
-  { date: '19 Oct 2026, 16:42', user: 'Emma Davis', action: 'Updated document permissions', category: 'Permissions', result: 'Success' },
-  { date: '19 Oct 2026, 14:08', user: 'Sara Smith', action: 'Opened shared document', category: 'Document', result: 'Success' },
-  { date: '18 Oct 2026, 11:31', user: 'Admin User', action: 'Reviewed security alerts', category: 'Security', result: 'Success' },
-]
-
-const permissions = [
-  { document: 'Project Proposal.pdf', owner: 'John Doe', user: 'Sara Smith', permission: 'View', status: 'Allowed' },
-  { document: 'Financial Report.xlsx', owner: 'Emma Davis', user: 'Tom Wilson', permission: 'Edit', status: 'Allowed' },
-  { document: 'Contract Draft.pdf', owner: 'Mia Taylor', user: 'Ryan Clark', permission: 'View', status: 'Revoked' },
-  { document: 'Product Roadmap.pdf', owner: 'John Doe', user: 'Lisa White', permission: 'View', status: 'Allowed' },
-]
-
-const initialAlerts = [
-  { id: 1, title: 'Repeated failed login attempts', severity: 'High', status: 'Open', time: '20 Oct 2026, 09:15' },
-  { id: 2, title: 'New device sign-in', severity: 'Medium', status: 'Review', time: '20 Oct 2026, 08:40' },
-  { id: 3, title: 'Permission updated', severity: 'Low', status: 'Resolved', time: '19 Oct 2026, 16:42' },
-]
 
 function Sidebar({ role = 'Administrator' }) {
   const navigate = useNavigate()
@@ -154,10 +136,6 @@ function Shell({ title, subtitle, role = 'Administrator', children }) {
 
         {children}
 
-        <p className="mt-5 text-xs text-slate-500">
-          Frontend demonstration using sample data. Backend persistence and
-          security checks are not connected yet.
-        </p>
       </div>
     </main>
   )
@@ -194,7 +172,7 @@ function SearchField({ value, onChange, placeholder = 'Search records...' }) {
 
 function Pill({ value }) {
   const good = ['Active', 'Allowed', 'Success', 'Resolved', 'Enabled']
-  const warning = ['Restricted', 'Review', 'Medium']
+  const warning = ['Restricted', 'Review', 'Medium', 'Disabled']
 
   const classes = good.includes(value)
     ? 'bg-emerald-100 text-emerald-800'
@@ -298,21 +276,40 @@ export function DocumentOverview() {
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('All statuses')
   const [selected, setSelected] = useState(null)
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
 
-  const rows = documents.filter(
-    (doc) =>
-      `${doc.name} ${doc.owner} ${doc.id}`
-        .toLowerCase()
-        .includes(query.toLowerCase()) &&
-      (status === 'All statuses' || doc.status === status),
-  )
+  useEffect(() => {
+    let active = true
+    const timer = window.setTimeout(async () => {
+      setLoading(true)
+      try {
+        const result = await getDocumentOverview({ search: query, status })
+        if (active) {
+          setData(result)
+          setError('')
+        }
+      } catch (err) {
+        if (active) setError(err.message || 'Unable to load document records.')
+      } finally {
+        if (active) setLoading(false)
+      }
+    }, 250)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [query, status])
+
+  const rows = data?.results || []
 
   return (
     <Shell title="Document Overview" subtitle="Review document records, ownership and access status">
       <div className="mb-5 grid gap-3 sm:grid-cols-3">
-        <Stat label="Total documents" value="128" icon={FileText} detail="Demo total" />
-        <Stat label="Active documents" value="96" icon={CheckCircle} detail="Sample data" />
-        <Stat label="Restricted" value="12" icon={LockKeyhole} detail="Access limited" />
+        <Stat label="Total documents" value={data?.total_count ?? '—'} icon={FileText} detail="Backend records" />
+        <Stat label="Active documents" value={data?.active_count ?? '—'} icon={CheckCircle} detail="Active records" />
+        <Stat label="Restricted" value={data?.restricted_count ?? '—'} icon={LockKeyhole} detail="Restricted records" />
       </div>
 
       <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_200px]">
@@ -328,6 +325,8 @@ export function DocumentOverview() {
           <option>Archived</option>
         </select>
       </div>
+      {error && <p role="alert" className="mb-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
+      {loading && <p role="status" className="mb-3 text-sm text-slate-500">Loading documents…</p>}
 
       <Table
         headers={['Document', 'Owner', 'Type', 'Uploaded', 'Access', 'Status', 'Details']}
@@ -362,22 +361,61 @@ export function DocumentOverview() {
 export function ActivityLogs() {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('All categories')
+  const [events, setEvents] = useState([])
+  const [summary, setSummary] = useState(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
 
-  const rows = activities.filter(
-    (item) =>
-      `${item.user} ${item.action} ${item.category}`
-        .toLowerCase()
-        .includes(query.toLowerCase()) &&
-      (category === 'All categories' || item.category === category),
+  useEffect(() => {
+    let active = true
+    Promise.all([
+      getAuditEvents('admin', { page_size: 100 }),
+      getAuditEvents('employee', { page_size: 100 }),
+      getActivitySummary(),
+    ]).then(([adminData, employeeData, summaryData]) => {
+      if (!active) return
+      setEvents([...(adminData.results || []), ...(employeeData.results || [])]
+        .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp)))
+      setSummary(summaryData)
+      setError('')
+    }).catch((err) => {
+      if (active) setError(err.message || 'Unable to load audit events.')
+    }).finally(() => {
+      if (active) setLoading(false)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const rows = events.map((event) => {
+    const action = event.action || ''
+    const categoryName = action.startsWith('DOCUMENT_SHARE') ? 'Permissions'
+      : action.startsWith('DOCUMENT_') || action.startsWith('FOLDER_') ? 'Document'
+        : action.includes('SECURITY') || action.includes('ALERT') ? 'Security'
+          : action.startsWith('USER_') || action.includes('LOGIN') || action.includes('PASSWORD') ? 'User Management'
+            : 'System Settings'
+    return {
+      date: new Date(event.timestamp).toLocaleString(),
+      user: event.actor_username,
+      action: event.action_display,
+      category: categoryName,
+      result: event.outcome,
+    }
+  }).filter((item) =>
+    `${item.user} ${item.action} ${item.category}`.toLowerCase().includes(query.toLowerCase()) &&
+    (category === 'All categories' || item.category === category),
   )
 
   return (
     <Shell title="Activity Logs" subtitle="Review recorded actions and events">
       <div className="mb-5 grid gap-3 sm:grid-cols-3">
-        <Stat label="Events shown" value={rows.length} icon={Activity} detail="Filtered demo records" />
-        <Stat label="Successful actions" value="100%" icon={CheckCircle} detail="Sample data" />
-        <Stat label="Audit trail" value="Demo" icon={ShieldCheck} detail="Not connected to backend" />
+        <Stat label="Events shown" value={rows.length} icon={Activity} detail="Filtered audit records" />
+        <Stat label="Successful actions" value={summary?.success_rate ?? '—'} icon={CheckCircle} detail="Backend audit summary" />
+        <Stat label="Audit trail" value={summary?.total_events ?? '—'} icon={ShieldCheck} detail="Recorded events" />
       </div>
+      {error && <p role="alert" className="mb-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
+      {loading && <p role="status" className="mb-3 text-sm text-slate-500">Loading audit events…</p>}
 
       <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_220px]">
         <SearchField value={query} onChange={setQuery} />
@@ -411,37 +449,74 @@ export function ActivityLogs() {
 export function PermissionAudit() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('All permissions')
+  const [events, setEvents] = useState([])
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
 
-  const rows = permissions.filter(
-    (item) =>
-      `${item.document} ${item.owner} ${item.user}`
-        .toLowerCase()
-        .includes(query.toLowerCase()) &&
-      (filter === 'All permissions' || item.status === filter),
+  useEffect(() => {
+    let active = true
+    Promise.all([
+      getAuditEvents('admin', { page_size: 100 }),
+      getAuditEvents('employee', { page_size: 100 }),
+    ])
+      .then(([adminData, employeeData]) => {
+        if (active) {
+          setEvents([...(adminData.results || []), ...(employeeData.results || [])]
+            .filter((event) => event.action?.startsWith('DOCUMENT_SHARE'))
+            .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp)))
+          setError('')
+        }
+      })
+      .catch((err) => {
+        if (active) setError(err.message || 'Unable to load permission audit records.')
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const rows = events.map((event) => ({
+    id: event.id,
+    document: event.target_id || 'Document',
+    owner: event.actor_username,
+    user: event.action_display,
+    permission: new Date(event.timestamp).toLocaleString(),
+    status: event.action === 'DOCUMENT_SHARE_REVOKE' ? 'Revoked'
+      : event.action === 'DOCUMENT_SHARE' ? 'Granted'
+        : 'Updated',
+  })).filter((item) =>
+    `${item.document} ${item.owner} ${item.user}`.toLowerCase().includes(query.toLowerCase()) &&
+    (filter === 'All permissions' || item.status === filter),
   )
 
   return (
     <Shell title="Permission Audit" subtitle="Review document access and permission decisions">
       <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_200px]">
-        <SearchField value={query} onChange={setQuery} placeholder="Search document, owner or user" />
+        <SearchField value={query} onChange={setQuery} placeholder="Search document, actor or event" />
         <select
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm"
         >
           <option>All permissions</option>
-          <option>Allowed</option>
+          <option>Granted</option>
+          <option>Updated</option>
           <option>Revoked</option>
         </select>
       </div>
+      {error && <p role="alert" className="mb-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
+      {loading && <p role="status" className="mb-3 text-sm text-slate-500">Loading permission audit…</p>}
 
       <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
         <ShieldCheck size={17} className="mr-2 inline" />
-        Review access against each document owner's policy. These are example records.
+        Review recorded document share grants, updates, and revocations.
       </div>
 
       <Table
-        headers={['Document', 'Owner', 'User', 'Permission', 'Decision']}
+        headers={['Document ID', 'Actor', 'Permission event', 'Date and time', 'Decision']}
         rows={rows.map((item) => [
           item.document,
           item.owner,
@@ -455,8 +530,31 @@ export function PermissionAudit() {
 }
 
 export function SecurityMonitoring() {
-  const [alerts, setAlerts] = useState(initialAlerts)
+  const [alerts, setAlerts] = useState([])
   const [filter, setFilter] = useState('All alerts')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [updatingId, setUpdatingId] = useState(null)
+
+  useEffect(() => {
+    let active = true
+    getSecurityAlerts()
+      .then((data) => {
+        if (active) {
+          setAlerts(data.results || [])
+          setError('')
+        }
+      })
+      .catch((err) => {
+        if (active) setError(err.message || 'Unable to load security alerts.')
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   const visible = alerts.filter(
     (alert) =>
@@ -465,23 +563,28 @@ export function SecurityMonitoring() {
       alert.status === filter,
   )
 
-  function toggleAlert(id) {
-    setAlerts((current) =>
-      current.map((alert) =>
-        alert.id === id
-          ? { ...alert, status: alert.status === 'Resolved' ? 'Open' : 'Resolved' }
-          : alert,
-      ),
-    )
+  async function toggleAlert(id) {
+    setUpdatingId(id)
+    setError('')
+    try {
+      const response = await resolveSecurityAlert(id)
+      setAlerts((current) => current.map((alert) => alert.id === id ? response.alert : alert))
+    } catch (err) {
+      setError(err.message || 'Unable to update this alert.')
+    } finally {
+      setUpdatingId(null)
+    }
   }
 
   return (
-    <Shell title="Security Monitoring" subtitle="Review sample alerts and update their demo status">
+    <Shell title="Security Monitoring" subtitle="Review security alerts and update their recorded status">
       <div className="mb-5 grid gap-3 sm:grid-cols-3">
-        <Stat label="Open alerts" value={alerts.filter((a) => a.status !== 'Resolved').length} icon={AlertTriangle} detail="Sample alerts" />
-        <Stat label="High severity" value={alerts.filter((a) => a.severity === 'High').length} icon={Shield} detail="Requires review" />
-        <Stat label="Resolved" value={alerts.filter((a) => a.status === 'Resolved').length} icon={CheckCircle} detail="Demo status" />
+        <Stat label="Open alerts" value={alerts.filter((a) => a.status !== 'Resolved').length} icon={AlertTriangle} detail="Backend alerts" />
+        <Stat label="High severity" value={alerts.filter((a) => ['High', 'Security Attack'].includes(a.severity)).length} icon={Shield} detail="Requires review" />
+        <Stat label="Resolved" value={alerts.filter((a) => a.status === 'Resolved').length} icon={CheckCircle} detail="Recorded resolution" />
       </div>
+      {error && <p role="alert" className="mb-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
+      {loading && <p role="status" className="mb-3 text-sm text-slate-500">Loading security alerts…</p>}
 
       <div className="mb-4">
         <select
@@ -493,6 +596,7 @@ export function SecurityMonitoring() {
           <option>High</option>
           <option>Medium</option>
           <option>Low</option>
+          <option>Security Attack</option>
           <option>Open</option>
           <option>Review</option>
           <option>Resolved</option>
@@ -504,15 +608,16 @@ export function SecurityMonitoring() {
         rows={visible.map((alert) => [
           alert.title,
           <Pill key={`${alert.id}-severity`} value={alert.severity} />,
-          alert.time,
+          new Date(alert.created_at).toLocaleString(),
           <Pill key={`${alert.id}-status`} value={alert.status} />,
           <button
             key={`${alert.id}-action`}
             type="button"
             onClick={() => toggleAlert(alert.id)}
+            disabled={updatingId === alert.id}
             className="font-semibold text-emerald-800"
           >
-            {alert.status === 'Resolved' ? 'Reopen' : 'Mark resolved'}
+            {updatingId === alert.id ? 'Saving…' : alert.status === 'Resolved' ? 'Reopen' : 'Mark resolved'}
           </button>,
         ])}
       />
@@ -523,12 +628,13 @@ export function SecurityMonitoring() {
 export { SystemSettings } from './SystemSettings.jsx'
 
 function ProfilePage({ role }) {
-  const [name, setName] = useState(
-    role === 'Administrator' ? 'Admin User' : `Demo ${role}`,
-  )
-  const [email, setEmail] = useState(
-    role === 'Administrator' ? 'admin@example.com' : 'demo@example.com',
-  )
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [lastLogin, setLastLogin] = useState(null)
+  const [accountStatus, setAccountStatus] = useState('')
+  const [accountActivity, setAccountActivity] = useState([])
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [passwordSaving, setPasswordSaving] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -566,9 +672,8 @@ function ProfilePage({ role }) {
 
   const loadProfileAndTfa = useCallback(async () => {
     try {
-      setTfaLoading(true)
       const [user, status] = await Promise.all([
-        getCurrentUser().catch(() => null),
+        getCurrentUser(),
         getTwoFactorStatus().catch((err) => {
           console.error('Failed to load 2FA status:', err)
           return null
@@ -576,6 +681,8 @@ function ProfilePage({ role }) {
       ])
 
       if (user) {
+        setLastLogin(user.last_login || null)
+        setAccountStatus(user.status || '')
         if (user.first_name || user.last_name) {
           setName(`${user.first_name} ${user.last_name}`.trim())
         } else if (user.username) {
@@ -587,15 +694,35 @@ function ProfilePage({ role }) {
       }
 
       if (status) {
-        setTfaStatus(status)
+        const isEnabled = Boolean(status.is_enabled ?? status.enabled ?? user?.two_factor_enabled)
+        setTfaStatus({
+          ...status,
+          is_enabled: isEnabled,
+          enabled: isEnabled,
+          enabled_at: isEnabled ? status.enabled_at : null,
+          recovery_codes_remaining: isEnabled ? (status.recovery_codes_remaining || 0) : 0,
+        })
       }
+      if (isAdmin && user?.username) {
+        const audit = await getAuditEvents('admin', { user: user.username, page_size: 3 })
+        setAccountActivity(audit.results || [])
+      }
+    } catch (error) {
+      setMessage(error.message || 'Unable to load profile information.')
     } finally {
       setTfaLoading(false)
     }
-  }, [])
+  }, [isAdmin])
 
   useEffect(() => {
-    loadProfileAndTfa()
+    let active = true
+    Promise.resolve().then(() => {
+      if (active) return loadProfileAndTfa()
+      return undefined
+    })
+    return () => {
+      active = false
+    }
   }, [loadProfileAndTfa])
 
   async function handleStartEnroll() {
@@ -713,7 +840,7 @@ function ProfilePage({ role }) {
     }
   }
 
-  function handlePasswordUpdate(event) {
+  async function handlePasswordUpdate(event) {
     event.preventDefault()
 
     if (newPassword.length < 8) {
@@ -726,7 +853,33 @@ function ProfilePage({ role }) {
       return
     }
 
-    setMessage('Demo only: connect the backend to securely change your password.')
+    setPasswordSaving(true)
+    try {
+      await changePassword({ currentPassword, newPassword, confirmPassword })
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setMessage('Password changed successfully.')
+    } catch (error) {
+      setMessage(error.message || 'Unable to change password.')
+    } finally {
+      setPasswordSaving(false)
+    }
+  }
+
+  async function handleProfileUpdate(event) {
+    event.preventDefault()
+    setProfileSaving(true)
+    try {
+      const user = await updateProfile({ name, email })
+      setName(user.display_name || name)
+      setEmail(user.email || email)
+      setMessage('Profile updated successfully.')
+    } catch (error) {
+      setMessage(error.message || 'Unable to update profile.')
+    } finally {
+      setProfileSaving(false)
+    }
   }
 
   return (
@@ -743,18 +896,12 @@ function ProfilePage({ role }) {
             <p>Role: <span className="font-semibold text-slate-800">{role}</span></p>
             <p className="flex items-center gap-2">
               Status:
-              <Pill value="Active" />
+              <Pill value={accountStatus || '—'} />
             </p>
-            <p>Last login: <span className="font-semibold text-slate-800">20 Oct 2026, 10:24</span></p>
+            <p>Last login: <span className="font-semibold text-slate-800">{lastLogin ? new Date(lastLogin).toLocaleString() : '—'}</span></p>
           </div>
 
-          <form
-            onSubmit={(event) => {
-              event.preventDefault()
-              setMessage('Profile updated in this demo.')
-            }}
-            className="mt-5 space-y-3 border-t border-slate-100 pt-4"
-          >
+          <form onSubmit={handleProfileUpdate} className="mt-5 space-y-3 border-t border-slate-100 pt-4">
             <label className="block text-sm font-medium">
               Edit name
               <input
@@ -776,8 +923,8 @@ function ProfilePage({ role }) {
               />
             </label>
 
-            <button type="submit" className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white">
-              Save Profile
+            <button type="submit" disabled={profileSaving} className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50">
+              {profileSaving ? 'Saving…' : 'Save Profile'}
             </button>
           </form>
         </section>
@@ -819,8 +966,8 @@ function ProfilePage({ role }) {
               </label>
             ))}
 
-            <button type="submit" className="inline-flex items-center gap-2 rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white">
-              <CheckCircle size={16} /> Update Password
+            <button type="submit" disabled={passwordSaving} className="inline-flex items-center gap-2 rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50">
+              <CheckCircle size={16} /> {passwordSaving ? 'Updating…' : 'Update Password'}
             </button>
           </form>
 
@@ -828,9 +975,6 @@ function ProfilePage({ role }) {
             <p role="status" className="mt-3 text-sm text-amber-800">{message}</p>
           )}
 
-          <p className="mt-3 text-xs text-slate-500">
-            Password updates are a demonstration until connected to the authentication backend.
-          </p>
         </section>
       </div>
 
@@ -843,7 +987,7 @@ function ProfilePage({ role }) {
               </h2>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-slate-500">Status:</span>
-                <Pill value={tfaStatus.is_enabled ? 'Enabled' : 'Not enabled'} />
+                <Pill value={tfaStatus.is_enabled ? 'Enabled' : 'Disabled'} />
               </div>
             </div>
 
@@ -1074,7 +1218,7 @@ function ProfilePage({ role }) {
                     }}
                     className="rounded-full border border-rose-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 transition"
                   >
-                    Disable 2FA
+                    Turn Off 2FA
                   </button>
                 </div>
               </div>
@@ -1088,7 +1232,7 @@ function ProfilePage({ role }) {
                 <div className="mb-4 flex items-center justify-between">
                   <div className="flex items-center gap-2 text-rose-700 font-bold text-lg">
                     <LockKeyhole size={20} />
-                    Disable Two-Factor Authentication
+                    Turn Off Two-Factor Authentication
                   </div>
                   <button
                     type="button"
@@ -1167,7 +1311,7 @@ function ProfilePage({ role }) {
                       disabled={disabling}
                       className="rounded-full bg-rose-700 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-800 disabled:opacity-60"
                     >
-                      {disabling ? 'Verifying...' : 'Confirm Disable 2FA'}
+                      {disabling ? 'Verifying...' : 'Confirm Turn Off 2FA'}
                     </button>
                   </div>
                 </form>
@@ -1191,27 +1335,20 @@ function ProfilePage({ role }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {[
-                    { date: '20 Oct 2026, 10:24', action: 'Logged in', ip: '192.0.2.30', result: 'Success' },
-                    { date: '19 Oct 2026, 09:10', action: 'Password change requested', ip: '192.0.2.30', result: 'Success' },
-                    { date: '18 Oct 2026, 08:55', action: 'Login attempt', ip: '192.0.2.99', result: 'Failed' },
-                  ].map((item) => (
-                    <tr key={`${item.date}-${item.action}`} className="border-b border-slate-100 last:border-0">
-                      <td className="px-3 py-3">{item.date}</td>
-                      <td className="px-3 py-3">{item.action}</td>
-                      <td className="px-3 py-3">{item.ip}</td>
-                      <td className="px-3 py-3">
-                        <Pill value={item.result} />
-                      </td>
+                  {accountActivity.map((item) => (
+                    <tr key={item.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-3 py-3">{new Date(item.timestamp).toLocaleString()}</td>
+                      <td className="px-3 py-3">{item.action_display}</td>
+                      <td className="px-3 py-3">{item.ip_address || '—'}</td>
+                      <td className="px-3 py-3"><Pill value={item.outcome} /></td>
                     </tr>
                   ))}
+                  {accountActivity.length === 0 && (
+                    <tr><td colSpan="4" className="px-3 py-8 text-center text-slate-500">No recent account activity.</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
-
-            <p className="mt-3 text-xs text-slate-500">
-              Sample activity only. Real audit records must come from the backend.
-            </p>
           </section>
         </>
       )}
@@ -1226,14 +1363,18 @@ export function AdminProfile() {
 export function LogoutPage() {
   const navigate = useNavigate()
   const [loggingOut, setLoggingOut] = useState(false)
+  const [error, setError] = useState('')
 
   async function handleConfirmLogout() {
     setLoggingOut(true)
+    setError('')
     try {
       await logout()
+      navigate('/')
+    } catch (logoutError) {
+      setError(logoutError.message || 'Unable to terminate the server session. Please try again.')
     } finally {
       setLoggingOut(false)
-      navigate('/')
     }
   }
 
@@ -1248,6 +1389,12 @@ export function LogoutPage() {
         <p className="mt-2 text-sm text-slate-500">
           Your active session will be securely terminated on the server.
         </p>
+
+        {error && (
+          <p role="alert" className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">
+            {error}
+          </p>
+        )}
 
         <div className="mt-6 flex justify-center gap-3">
           <button

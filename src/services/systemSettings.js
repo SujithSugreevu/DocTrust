@@ -4,13 +4,14 @@
  */
 
 import { getCsrfToken } from './auth.js'
+import { fetchWithTabSession } from './tabSession.js'
 
 /**
  * Fetch all system settings along with live health and capability indicators.
  * @returns {Promise<Object>}
  */
 export async function getSystemSettings() {
-  const response = await fetch('/api/admin/system-settings/', {
+  const response = await fetchWithTabSession('/api/admin/system-settings/', {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -37,9 +38,9 @@ export async function getSystemSettings() {
  * @returns {Promise<Object>} Updated settings object
  */
 export async function updateSystemSettings(partialUpdates) {
-  const csrfToken = await getCsrfToken()
+  const csrfToken = await getCsrfToken({ forceRefresh: true })
 
-  const response = await fetch('/api/admin/system-settings/', {
+  const response = await fetchWithTabSession('/api/admin/system-settings/', {
     method: 'PATCH',
     credentials: 'include',
     headers: {
@@ -70,9 +71,9 @@ export async function updateSystemSettings(partialUpdates) {
  * @returns {Promise<Object>} Default settings object
  */
 export async function resetSystemSettings() {
-  const csrfToken = await getCsrfToken()
+  const csrfToken = await getCsrfToken({ forceRefresh: true })
 
-  const response = await fetch('/api/admin/system-settings/reset/', {
+  const response = await fetchWithTabSession('/api/admin/system-settings/reset/', {
     method: 'POST',
     credentials: 'include',
     headers: {

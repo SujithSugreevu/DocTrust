@@ -44,6 +44,9 @@ class AuditEvent(models.Model):
         DOCUMENT_ARCHIVE = "DOCUMENT_ARCHIVE", "Document Archived"
         DOCUMENT_VIEW = "DOCUMENT_VIEW", "Document Metadata Viewed"
         DOCUMENT_UPDATE = "DOCUMENT_UPDATE", "Document Metadata Updated"
+        DOCUMENT_SHARE = "DOCUMENT_SHARE", "Document Shared"
+        DOCUMENT_SHARE_UPDATE = "DOCUMENT_SHARE_UPDATE", "Document Share Updated"
+        DOCUMENT_SHARE_REVOKE = "DOCUMENT_SHARE_REVOKE", "Document Share Revoked"
         # Folder lifecycle
         FOLDER_CREATE = "FOLDER_CREATE", "Folder Created"
         FOLDER_RENAME = "FOLDER_RENAME", "Folder Renamed"
@@ -53,12 +56,24 @@ class AuditEvent(models.Model):
         SYSTEM_SETTINGS_RESET = "SYSTEM_SETTINGS_RESET", "System Settings Reset"
         MAINTENANCE_MODE_TOGGLE = "MAINTENANCE_MODE_TOGGLE", "Maintenance Mode Toggled"
         SECURITY_ALERT = "SECURITY_ALERT", "Security Alert Triggered"
+        SECURITY_ALERT_RESOLVED = "SECURITY_ALERT_RESOLVED", "Security Alert Resolved"
         # Two-Factor Authentication actions
         MFA_ENROLL = "MFA_ENROLL", "Two-Factor Authentication Enrolled"
         MFA_DISABLE = "MFA_DISABLE", "Two-Factor Authentication Disabled"
         MFA_LOGIN_SUCCESS = "MFA_LOGIN_SUCCESS", "Two-Factor Authentication Succeeded"
         MFA_LOGIN_FAILED = "MFA_LOGIN_FAILED", "Two-Factor Authentication Failed"
         MFA_RECOVERY_USED = "MFA_RECOVERY_USED", "Two-Factor Recovery Code Used"
+        # Authentication lifecycle
+        LOGIN_SUCCESS = "LOGIN_SUCCESS", "Login Successful"
+        LOGIN_FAILED = "LOGIN_FAILED", "Login Failed"
+        LOGOUT = "LOGOUT", "User Logged Out"
+        # User management
+        USER_CREATE = "USER_CREATE", "User Account Created"
+        USER_UPDATE = "USER_UPDATE", "User Account Updated"
+        USER_SUSPEND = "USER_SUSPEND", "User Account Suspended"
+        USER_ACTIVATE = "USER_ACTIVATE", "User Account Activated"
+        PASSWORD_CHANGE = "PASSWORD_CHANGE", "Password Changed"
+        PASSWORD_RESET = "PASSWORD_RESET", "Password Reset"
 
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -134,3 +149,76 @@ class AuditEvent(models.Model):
     def __str__(self):
         actor_name = self.actor.username if self.actor else "system"
         return f"[{self.timestamp}] {actor_name}: {self.get_action_display()} ({self.target_type} #{self.target_id})"
+
+
+class SecurityAlert(models.Model):
+    """
+    Security alert model for tracking security events, attacks, and alerts.
+    Supports resolution status, persistence, and audit tracking.
+    """
+
+    class Severity(models.TextChoices):
+        ATTACK = "Security Attack", "Security Attack"
+        HIGH = "High", "High"
+        MEDIUM = "Medium", "Medium"
+        LOW = "Low", "Low"
+
+    class Status(models.TextChoices):
+        OPEN = "Open", "Open"
+        REVIEW = "Review", "Review"
+        RESOLVED = "Resolved", "Resolved"
+
+    class Scope(models.TextChoices):
+        ADMIN = "ADMIN", "Administrator"
+        EMPLOYEE = "EMPLOYEE", "Employee"
+
+    title = models.CharField(max_length=200)
+    severity = models.CharField(
+        max_length=20,
+        choices=Severity.choices,
+        default=Severity.HIGH,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.OPEN,
+    )
+    scope = models.CharField(
+        max_length=20,
+        choices=Scope.choices,
+        default=Scope.EMPLOYEE,
+    )
+    alert_type = models.CharField(max_length=100)
+    details = models.TextField()
+    target_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="security_alerts",
+    )
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="resolved_alerts",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolution_notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "-created_at"], name="sec_alert_status_idx"),
+            models.Index(fields=["scope", "-created_at"], name="sec_alert_scope_idx"),
+        ]
+        verbose_name = "Security Alert"
+        verbose_name_plural = "Security Alerts"
+
+    def __str__(self):
+        return f"[{self.severity}] {self.title} ({self.status})"
+

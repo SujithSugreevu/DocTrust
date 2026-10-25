@@ -1,0 +1,84 @@
+.employee-theme {
+  background-color: #ecfeff;
+  color: #1f2937;
+}
+
+.employee-theme [class~="bg-emerald-50"],
+.employee-theme [class~="bg-teal-50"] {
+  background-color: #ecfeff;
+}
+
+.employee-theme [class~="bg-emerald-100"],
+.employee-theme [class~="bg-teal-100"],
+.employee-theme [class~="bg-slate-50"],
+.employee-theme .employee-stat-icon {
+  background-color: #cffafe;
+}
+
+.employee-theme [class~="bg-emerald-700"] {
+  background-color: #0891b2;
+}
+
+.employee-theme [class~="bg-emerald-800"] {
+  background-color: #0e7490;
+}
+
+.employee-theme [class~="text-emerald-700"],
+.employee-theme [class~="text-emerald-800"],
+.employee-theme [class~="text-teal-700"],
+.employee-theme [class~="text-teal-800"],
+.employee-theme .employee-stat-icon {
+  color: #0e7490;
+}
+
+.employee-theme [class~="text-emerald-900"] {
+  color: #164e63;
+}
+
+.employee-theme [class~="text-slate-800"] {
+  color: #1f2937;
+}
+
+.employee-theme [class~="border-emerald-100"],
+.employee-theme [class~="border-emerald-200"],
+.employee-theme [class~="border-emerald-300"],
+.employee-theme [class~="border-slate-100"],
+.employee-theme [class~="border-slate-200"] {
+  border-color: #cffafe;
+}
+
+.employee-theme [class~="border-emerald-600"],
+.employee-theme [class~="border-emerald-700"] {
+  border-color: #0891b2;
+}
+
+.employee-theme [class~="focus:border-emerald-600"]:focus,
+.employee-theme [class~="focus:border-emerald-700"]:focus {
+  border-color: #0891b2;
+}
+
+.employee-theme [class~="focus:ring-emerald-100"]:focus {
+  --tw-ring-color: #cffafe;
+}
+
+.employee-theme [class~="hover:bg-emerald-50"]:hover,
+.employee-theme [class~="hover:bg-emerald-100"]:hover {
+  background-color: #ecfeff;
+}
+
+.employee-theme [class~="hover:bg-emerald-800"]:hover {
+  background-color: #0e7490;
+}
+
+.employee-theme :focus-visible {
+  outline-color: #22d3ee;
+}
+
+.employee-theme aside [aria-current="page"] {
+  background-color: #0891b2;
+}
+
+.employee-theme aside nav button:not([aria-current="page"]):hover {
+  background-color: rgb(34 211 238 / 18%);
+  color: #ffffff;
+}
