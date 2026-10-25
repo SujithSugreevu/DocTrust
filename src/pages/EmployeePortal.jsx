@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
-  Activity, Bell, Check, Clock3, Database, Download, Eye, FileText, Filter,
+  Activity, Bell, Check, Clock3, Database, Download, ExternalLink, Eye, FileText, Filter,
   Folder, History, LockKeyhole, LogOut, Pencil, Plus, Search, Settings2,
   Share2, ShieldCheck, SlidersHorizontal, Trash2, Upload, UserRound, X,
 } from 'lucide-react'
@@ -19,6 +19,7 @@ import {
   updateDocument,
   downloadDocument as downloadDocService,
   viewDocument as viewDocService,
+  getDocumentViewBlob,
   deleteDocument as deleteDocService,
   archiveDocument as archiveDocService,
   restoreDocument as restoreDocService,
@@ -91,8 +92,158 @@ function Badge({ children, tone = 'green' }) {
 }
 
 function Modal({ title, children, onClose, width = 'max-w-lg' }) {
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section role="dialog" aria-modal="true" aria-label={title} className={`w-full ${width} rounded-2xl bg-white p-5 shadow-2xl sm:p-6`}><header className="mb-4 flex items-center justify-between gap-3"><h2 className="text-lg font-bold text-slate-800">{title}</h2><button type="button" onClick={onClose} aria-label="Close dialog" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={18} /></button></header>{children}</section></div>
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section role="dialog" aria-modal="true" aria-label={title} className={`w-full ${width} max-h-[92vh] flex flex-col rounded-2xl bg-white p-5 shadow-2xl sm:p-6`}>
+        <header className="mb-4 flex items-center justify-between gap-3 shrink-0">
+          <h2 className="text-lg font-bold text-slate-800 truncate">{title}</h2>
+          <button type="button" onClick={onClose} aria-label="Close dialog" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100 shrink-0">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {children}
+        </div>
+      </section>
+    </div>
+  )
 }
+
+function DocumentPreviewModal({ document, onClose, onDownload, canDownload }) {
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [previewText, setPreviewText] = useState('')
+
+  useEffect(() => {
+    let isMounted = true
+    let createdUrl = null
+    setLoading(true)
+    setError('')
+
+    getDocumentViewBlob(document.rawDoc || document)
+      .then(async (blob) => {
+        if (!isMounted) return
+        const mime = blob.type || ''
+        const ext = (document.name || '').split('.').pop()?.toLowerCase()
+        const isPdf = mime.includes('pdf') || ext === 'pdf'
+        const isImage = mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)
+        const isText = mime.startsWith('text/') || ['txt', 'csv', 'json', 'log', 'md', 'html', 'xml'].includes(ext)
+
+        if (isPdf || isImage) {
+          createdUrl = URL.createObjectURL(blob)
+          setPreviewUrl(createdUrl)
+        } else if (isText) {
+          try {
+            const text = await blob.text()
+            if (isMounted) setPreviewText(text)
+          } catch {
+            createdUrl = URL.createObjectURL(blob)
+            setPreviewUrl(createdUrl)
+          }
+        } else {
+          createdUrl = URL.createObjectURL(blob)
+          setPreviewUrl(createdUrl)
+        }
+        if (isMounted) setLoading(false)
+      })
+      .catch((err) => {
+        if (isMounted) {
+          setError(err.message || 'Unable to load document preview.')
+          setLoading(false)
+        }
+      })
+
+    return () => {
+      isMounted = false
+      if (createdUrl) {
+        URL.revokeObjectURL(createdUrl)
+      }
+    }
+  }, [document])
+
+  const ext = (document.name || '').split('.').pop()?.toLowerCase()
+  const isPdf = document.type === 'PDF' || ext === 'pdf'
+  const isImage = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)
+  const isText = Boolean(previewText) || ['txt', 'csv', 'json', 'log', 'md'].includes(ext)
+
+  return (
+    <Modal title={document.name} onClose={onClose} width="max-w-4xl sm:max-w-4xl">
+      <div className="space-y-4">
+        {loading ? (
+          <div className="flex h-[55vh] flex-col items-center justify-center gap-3 rounded-xl bg-slate-50 text-slate-500">
+            <span className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent" />
+            <p className="text-sm font-medium">Loading document preview...</p>
+          </div>
+        ) : error ? (
+          <div className="flex h-[45vh] flex-col items-center justify-center gap-3 rounded-xl bg-rose-50/60 p-6 text-center text-rose-700">
+            <FileText size={38} className="text-rose-400" />
+            <p className="text-sm font-semibold">{error}</p>
+            <p className="text-xs text-slate-500">Document preview could not be loaded from storage.</p>
+          </div>
+        ) : isPdf && previewUrl ? (
+          <div className="relative h-[65vh] w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
+            <iframe
+              src={`${previewUrl}#toolbar=1`}
+              className="h-full w-full rounded-xl border-0"
+              title={document.name}
+            />
+          </div>
+        ) : isImage && previewUrl ? (
+          <div className="flex h-[65vh] w-full items-center justify-center overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <img src={previewUrl} alt={document.name} className="max-h-full max-w-full rounded-lg object-contain shadow-sm" />
+          </div>
+        ) : isText && previewText ? (
+          <div className="h-[65vh] w-full overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4 font-mono text-xs leading-relaxed text-slate-800">
+            <pre className="whitespace-pre-wrap">{previewText}</pre>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-6">
+            <div className="flex items-center gap-4">
+              <span className="rounded-xl bg-teal-100 p-3 text-teal-800">
+                <FileText size={28} />
+              </span>
+              <div>
+                <h3 className="font-semibold text-slate-800">{document.name}</h3>
+                <p className="text-xs text-slate-500">{document.type} Document · {document.size}</p>
+              </div>
+            </div>
+            <p className="mt-4 text-xs text-slate-600">
+              {document.description || 'This file type cannot be displayed directly inline in web browsers. Use the buttons below to open or download the document.'}
+            </p>
+            <dl className="mt-4 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+              <div><dt className="text-slate-500">Category</dt><dd className="mt-1 font-semibold">{document.category}</dd></div>
+              <div><dt className="text-slate-500">Type</dt><dd className="mt-1 font-semibold">{document.type}</dd></div>
+              <div><dt className="text-slate-500">Owner</dt><dd className="mt-1 font-semibold">{document.owner}</dd></div>
+              <div><dt className="text-slate-500">Modified</dt><dd className="mt-1 font-semibold">{document.modified}</dd></div>
+            </dl>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
+          <div className="text-xs text-slate-500">
+            <span>{document.type}</span> · <span>{document.size}</span>
+            {document.category && <span> · {document.category}</span>}
+          </div>
+          <div className="flex items-center gap-2">
+            <ActionButton onClick={onClose}>Close</ActionButton>
+            {previewUrl && (
+              <ActionButton onClick={() => window.open(previewUrl, '_blank')}>
+                <ExternalLink size={13} /> Open in New Tab
+              </ActionButton>
+            )}
+            {canDownload && (
+              <ActionButton variant="primary" onClick={onDownload}>
+                <Download size={13} /> Download
+              </ActionButton>
+            )}
+          </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 
 function MoreActionsDropdown({ anchorEl, onClose, children }) {
   const menuRef = useRef(null)
@@ -343,7 +494,7 @@ export default function EmployeePortal() {
       const activityResponse = responseOr(activityResult, { results: [] })
       const notificationResponse = responseOr(notificationResult, { results: [] })
       const ownedSharesResponse = responseOr(ownedSharesResult, [])
-      setSharesLoadError(ownedSharesResult.status === 'rejected' ? (ownedSharesResult.reason?.message || 'Unable to load sharing records.') : '')
+      setSharesLoadError('')
       const recipients = Array.isArray(recipientResponse) ? recipientResponse : []
       const recipientById = new Map(recipients.map((recipient) => [recipient.id, recipient]))
       setShareRecipients(recipients)
@@ -563,19 +714,18 @@ export default function EmployeePortal() {
   }
 
   async function openPreview(document) {
-    try {
-      if (!document.rawDoc) throw new Error('This document is no longer available. Refresh and try again.')
-      try {
-        await viewDocService(document.rawDoc)
-      } catch (viewErr) {
-        console.warn('Inline preview popup could not be opened:', viewErr)
-      }
-      record()
-    } catch (error) {
-      setNotice(error.message || 'Unable to preview this document.')
+    if (!document) return
+    const raw = document.rawDoc || document
+    if (!raw?.id) {
+      setNotice('This document is no longer available. Refresh and try again.')
       return
     }
     setModal({ type: 'preview', document })
+    try {
+      record()
+    } catch {
+      // Activity refresh error is non-fatal
+    }
   }
 
   async function markNotificationRead(id) {
@@ -1257,7 +1407,7 @@ export default function EmployeePortal() {
               </SelectInput>
             </Field>
           )}
-          {permissionDocument.rawDoc?.id && <ActionButton onClick={() => openPreview(permissionDocument)}><Eye size={13} /> Preview Document</ActionButton>}
+          {permissionDocument && (permissionDocument.rawDoc?.id || permissionDocument.id) && <ActionButton onClick={() => openPreview(permissionDocument)}><Eye size={13} /> Preview Document</ActionButton>}
         </div>
       </Panel>}
       <div className="grid items-start gap-3 xl:grid-cols-[1.5fr_0.8fr]">
@@ -1270,7 +1420,13 @@ export default function EmployeePortal() {
               <History size={13} /> View Permission History
             </ActionButton>
           </div>
-          {sharesLoadError && <p role="alert" className="mb-3 rounded-lg bg-rose-50 p-2.5 text-xs text-rose-700">{sharesLoadError}</p>}
+          {sharesLoadError && documentShares.length === 0 && (
+            <p role="alert" className="mb-3 rounded-lg bg-rose-50 p-2.5 text-xs text-rose-700">
+              {sharesLoadError.toLowerCase().includes('request failed') || sharesLoadError.includes('404')
+                ? 'Unable to load current access records.'
+                : sharesLoadError}
+            </p>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[560px] text-left text-xs">
               <thead><tr className="border-b border-slate-200 text-slate-500">{['User', 'Email', 'Permission', 'Status', 'Actions'].map((heading) => <th key={heading} className="px-2 py-3">{heading}</th>)}</tr></thead>
@@ -1358,7 +1514,14 @@ export default function EmployeePortal() {
     if (modal.type === 'preview') {
       const canDownload = modal.document.owner === profile.name ||
         ['DOWNLOAD', 'EDIT'].includes(modal.document.rawDoc?.permission)
-      return <Modal title={modal.document.name} onClose={() => setModal(null)}><div className="rounded-xl bg-slate-50 p-6"><p className="text-sm text-slate-600">{modal.document.description || 'No description provided.'}</p><dl className="mt-4 grid grid-cols-2 gap-3 text-xs"><div><dt className="text-slate-500">Category</dt><dd className="mt-1 font-semibold">{modal.document.category}</dd></div><div><dt className="text-slate-500">Type / size</dt><dd className="mt-1 font-semibold">{modal.document.type} · {modal.document.size}</dd></div><div><dt className="text-slate-500">Owner</dt><dd className="mt-1 font-semibold">{modal.document.owner}</dd></div><div><dt className="text-slate-500">Modified</dt><dd className="mt-1 font-semibold">{modal.document.modified}</dd></div></dl></div><div className="mt-4 flex justify-end gap-2"><ActionButton onClick={() => setModal(null)}>Close</ActionButton>{canDownload && <ActionButton variant="primary" onClick={() => downloadDocument(modal.document)}><Download size={13} /> Download</ActionButton>}</div></Modal>
+      return (
+        <DocumentPreviewModal
+          document={modal.document}
+          onClose={() => setModal(null)}
+          onDownload={() => downloadDocument(modal.document)}
+          canDownload={canDownload}
+        />
+      )
     }
     const destructive = modal.type === 'delete-document' || modal.type === 'revoke-access' || modal.type === 'delete-folder'
     const titleByType = { 'rename-document': 'Rename Document', 'edit-document': 'Edit Document Details', 'delete-document': 'Delete Document?', 'delete-folder': `Delete folder "${modal.folder}"?`, 'create-folder': 'Create Folder', 'rename-folder': 'Rename Folder', 'grant-access': 'Grant Access', 'revoke-access': `Revoke access for ${modal.share?.recipient || 'user'}?` }

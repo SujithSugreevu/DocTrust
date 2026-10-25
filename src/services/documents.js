@@ -37,8 +37,7 @@ async function apiFetch(url, options = {}) {
     const message =
       data.detail ||
       (data.errors && Object.values(data.errors).flat().join(' ')) ||
-      Object.values(data).flat().join(' ') ||
-      `Request failed (${response.status})`
+      (response.status === 404 ? 'Resource not found.' : `Unable to complete request (${response.status})`)
     throw new Error(message)
   }
 
@@ -184,14 +183,7 @@ export async function viewDocument(doc) {
     popup.opener = null
   }
   try {
-    const response = await fetchWithTabSession(`${BASE}/${doc.id}/view/`, {
-      credentials: 'include',
-    })
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}))
-      throw new Error(data.detail || `Document preview failed (HTTP ${response.status}).`)
-    }
-    const blob = await response.blob()
+    const blob = await getDocumentViewBlob(doc)
     if (popup) {
       popup.location.href = URL.createObjectURL(blob)
     }
@@ -200,6 +192,22 @@ export async function viewDocument(doc) {
     if (popup) popup.close()
     throw error
   }
+}
+
+/** Fetch original document blob through authorized inline-view endpoint for preview display. */
+export async function getDocumentViewBlob(doc) {
+  const docId = doc?.id || doc?.rawDoc?.id
+  if (!docId) {
+    throw new Error('Invalid document ID for preview.')
+  }
+  const response = await fetchWithTabSession(`${BASE}/${docId}/view/`, {
+    credentials: 'include',
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.detail || `Document preview failed (HTTP ${response.status}).`)
+  }
+  return response.blob()
 }
 
 export async function getStorageUsage() {

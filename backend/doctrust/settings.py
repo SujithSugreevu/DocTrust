@@ -7,6 +7,7 @@ Environment variables are loaded from the .env file in the project root.
 import os
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 from dotenv import load_dotenv
 from corsheaders.defaults import default_headers
@@ -86,15 +87,38 @@ TEMPLATES = [
 WSGI_APPLICATION = "doctrust.wsgi.application"
 
 # ── Database ─────────────────────────────────────────────────────────
+def _database_from_url(url):
+    """Convert a Neon PostgreSQL URL into Django's database settings."""
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    options = {}
+    if "sslmode" in query:
+        options["sslmode"] = query["sslmode"][0]
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": unquote(parsed.path.lstrip("/")),
+        "USER": unquote(parsed.username or ""),
+        "PASSWORD": unquote(parsed.password or ""),
+        "HOST": parsed.hostname,
+        "PORT": parsed.port or 5432,
+        "OPTIONS": options,
+        # Neon pooled URLs are intended for short-lived web requests.
+        "CONN_MAX_AGE": 0,
+    }
+
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
 DATABASES = {
-    "default": {
+    "default": _database_from_url(DATABASE_URL)
+    if DATABASE_URL
+    else {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": os.environ.get("POSTGRES_DB", "doctrust_db"),
         "USER": os.environ.get("POSTGRES_USER", "doctrust_user"),
         "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
         "HOST": os.environ.get("POSTGRES_HOST", "127.0.0.1"),
         "PORT": os.environ.get("POSTGRES_PORT", "5432"),
-    }
+    },
 }
 
 # ── Custom user model ────────────────────────────────────────────────
