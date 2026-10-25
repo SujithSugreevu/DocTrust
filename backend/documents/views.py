@@ -32,6 +32,7 @@ from rest_framework.views import APIView
 from accounts.permissions import IsActiveUser
 from auditlog.helpers import log_event
 from auditlog.models import AuditEvent
+from doctrust.startup import format_safe_exception
 from documents.models import Document, DocumentShare, EmployeeNotification, Folder
 from documents.permissions import IsEmployee
 from documents.serializers import (
@@ -310,7 +311,11 @@ class DocumentListCreateView(APIView):
         try:
             storage.save_stream(BytesIO(file_bytes), storage_key)
         except StorageError as exc:
-            logger.error("Storage write failed for user %s: %s", request.user.pk, exc)
+            logger.error(
+                "Storage write failed for user %s:\n%s",
+                request.user.pk,
+                format_safe_exception(exc),
+            )
             return Response(
                 {"detail": "File storage failed. Please try again."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -348,18 +353,17 @@ class DocumentListCreateView(APIView):
         except Exception as exc:
             # DB write or audit logging failed — clean up stored file to prevent orphans
             logger.error(
-                "Document DB insert failed for user %s (storage_key=%s): %s",
+                "Document DB insert failed for user %s:\n%s",
                 request.user.pk,
-                storage_key,
-                exc,
+                format_safe_exception(exc),
             )
             try:
                 storage.delete(storage_key)
             except StorageError as cleanup_err:
                 logger.critical(
-                    "ORPHANED FILE: storage cleanup failed after DB error for key=%s: %s",
-                    storage_key,
-                    cleanup_err,
+                    "ORPHANED FILE: storage cleanup failed after DB error for user %s:\n%s",
+                    request.user.pk,
+                    format_safe_exception(cleanup_err),
                 )
             return Response(
                 {"detail": "Upload failed during processing. Please try again."},
@@ -454,9 +458,8 @@ class DocumentDownloadView(APIView):
         storage = PrivateDocumentStorage()
         if not storage.exists(doc.storage_key):
             logger.error(
-                "Storage file missing for document pk=%s storage_key=%s",
+                "Storage file missing for document pk=%s",
                 doc.pk,
-                doc.storage_key,
             )
             return Response(
                 {"detail": "Document file is not available. Please contact support."},
@@ -862,7 +865,11 @@ class DocumentPurgeView(APIView):
         try:
             storage.delete(storage_key)
         except StorageError as exc:
-            logger.error("Purge storage delete failed for document pk=%s: %s", pk, exc)
+            logger.error(
+                "Purge storage delete failed for document pk=%s:\n%s",
+                pk,
+                format_safe_exception(exc),
+            )
             return Response(
                 {"detail": "File purge failed. Please try again."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -884,10 +891,9 @@ class DocumentPurgeView(APIView):
             # Physical file is already deleted. Log inconsistency but do not re-raise
             # since exposing this error to the user would be misleading.
             logger.critical(
-                "PURGE INCONSISTENCY: file deleted but DB update failed for pk=%s key=%s: %s",
+                "PURGE INCONSISTENCY: file deleted but DB update failed for pk=%s:\n%s",
                 pk,
-                storage_key,
-                exc,
+                format_safe_exception(exc),
             )
             return Response(
                 {"detail": "Purge recorded but database update failed. Please contact support."},

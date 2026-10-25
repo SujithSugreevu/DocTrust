@@ -15,6 +15,7 @@ import re
 import secrets
 from pathlib import Path
 from django.conf import settings
+from django.utils.functional import SimpleLazyObject
 
 STORAGE_KEY_REGEX = re.compile(r"^[0-9a-f]{64}$")
 
@@ -54,8 +55,13 @@ class PrivateDocumentStorage:
         # previously writable directory into a read-only one.  ACLs protect
         # the private root on Windows; POSIX permissions protect it elsewhere.
         mode = 0o700 if os.name != "nt" else 0o777
-        self.root_path.mkdir(mode=mode, parents=True, exist_ok=True)
-        self.temp_path.mkdir(mode=mode, parents=True, exist_ok=True)
+        try:
+            self.root_path.mkdir(mode=mode, parents=True, exist_ok=True)
+            self.temp_path.mkdir(mode=mode, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise StorageError(
+                "DOCUMENT_STORAGE_ROOT is not writable by the deployment runtime."
+            ) from exc
 
     @staticmethod
     def generate_storage_key() -> str:
@@ -65,7 +71,7 @@ class PrivateDocumentStorage:
     def validate_key(self, storage_key: str):
         """Validate key format strictly against ^[0-9a-f]{64}$."""
         if not isinstance(storage_key, str) or not STORAGE_KEY_REGEX.match(storage_key):
-            raise InvalidStorageKeyError(f"Invalid storage key format: {storage_key!r}")
+            raise InvalidStorageKeyError("Invalid storage key format.")
 
     def get_path(self, storage_key: str) -> Path:
         """
@@ -82,7 +88,7 @@ class PrivateDocumentStorage:
         try:
             candidate.relative_to(self.root_path)
         except ValueError:
-            raise PathTraversalError(f"Storage path escapes root directory: {candidate}")
+            raise PathTraversalError("Storage path escapes the configured root directory.")
 
         return candidate
 
@@ -132,7 +138,7 @@ class PrivateDocumentStorage:
                     tmp_target.unlink()
                 except OSError:
                     pass
-            raise StorageError(f"Failed to save document stream: {exc}") from exc
+            raise StorageError("Failed to save document stream.") from exc
 
     def open(self, storage_key: str):
         """Open a binary file handle for streaming. Caller must close handle."""
@@ -166,7 +172,7 @@ class PrivateDocumentStorage:
                     pass
                 return True
             except OSError as exc:
-                raise StorageError(f"Failed to delete stored file: {exc}") from exc
+                raise StorageError("Failed to delete stored file.") from exc
         return False
 
     def get_file_size(self, storage_key: str) -> int:
@@ -177,8 +183,8 @@ class PrivateDocumentStorage:
         return target_path.stat().st_size
 
 
-# Default singleton instance
-default_storage = PrivateDocumentStorage()
+# Lazy singleton instance: do not touch the filesystem while Django imports URL modules.
+default_storage = SimpleLazyObject(PrivateDocumentStorage)
 
 
 def get_user_storage_usage(user) -> int:

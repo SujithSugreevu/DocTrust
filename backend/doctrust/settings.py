@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 from corsheaders.defaults import default_headers
 
@@ -20,18 +21,50 @@ PROJECT_ROOT = BASE_DIR.parent  # DocTrust root (where .env lives)
 load_dotenv(PROJECT_ROOT / ".env")
 
 # ── Security ─────────────────────────────────────────────────────────
-SECRET_KEY = os.environ.get(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-CHANGE-THIS-IN-PRODUCTION",
-)
-
 DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() in ("true", "1", "yes")
+_INSECURE_DEFAULT_SECRET = "django-insecure-CHANGE-THIS-IN-PRODUCTION"
+_configured_secret = os.environ.get("DJANGO_SECRET_KEY", "").strip()
+
+if DEBUG:
+    SECRET_KEY = _configured_secret or _INSECURE_DEFAULT_SECRET
+elif not _configured_secret or _configured_secret == _INSECURE_DEFAULT_SECRET:
+    raise ImproperlyConfigured(
+        "DJANGO_SECRET_KEY must be set to a non-default value when DJANGO_DEBUG=False."
+    )
+elif len(_configured_secret) < 50:
+    raise ImproperlyConfigured(
+        "DJANGO_SECRET_KEY must be at least 50 characters when DJANGO_DEBUG=False."
+    )
+else:
+    SECRET_KEY = _configured_secret
+
+FRONTEND_BASE_URL = os.environ.get(
+    "FRONTEND_BASE_URL",
+    "http://localhost:5173" if DEBUG else "",
+).strip().rstrip("/")
+if not DEBUG and not FRONTEND_BASE_URL:
+    raise ImproperlyConfigured(
+        "FRONTEND_BASE_URL must be configured when DJANGO_DEBUG=False."
+    )
+
+_allowed_hosts_raw = os.environ.get("DJANGO_ALLOWED_HOSTS", "").strip()
+if not _allowed_hosts_raw:
+    if DEBUG:
+        _allowed_hosts_raw = "localhost,127.0.0.1"
+    else:
+        raise ImproperlyConfigured(
+            "DJANGO_ALLOWED_HOSTS must list the production hostnames when DJANGO_DEBUG=False."
+        )
 
 ALLOWED_HOSTS = [
     host.strip()
-    for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    for host in _allowed_hosts_raw.split(",")
     if host.strip()
 ]
+if not DEBUG and "*" in ALLOWED_HOSTS:
+    raise ImproperlyConfigured(
+        "DJANGO_ALLOWED_HOSTS must not contain '*' in production."
+    )
 if DEBUG and "testserver" not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append("testserver")
 
@@ -89,7 +122,23 @@ WSGI_APPLICATION = "doctrust.wsgi.application"
 # ── Database ─────────────────────────────────────────────────────────
 def _database_from_url(url):
     """Convert a Neon PostgreSQL URL into Django's database settings."""
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ImproperlyConfigured(
+            "DATABASE_URL must be a valid PostgreSQL connection URL."
+        ) from exc
+
+    if (
+        parsed.scheme not in {"postgres", "postgresql"}
+        or not parsed.hostname
+        or not parsed.path.strip("/")
+    ):
+        raise ImproperlyConfigured(
+            "DATABASE_URL must include a PostgreSQL scheme, hostname, and database name."
+        )
+
     query = parse_qs(parsed.query)
     options = {}
     if "sslmode" in query:
@@ -100,14 +149,19 @@ def _database_from_url(url):
         "USER": unquote(parsed.username or ""),
         "PASSWORD": unquote(parsed.password or ""),
         "HOST": parsed.hostname,
-        "PORT": parsed.port or 5432,
+        "PORT": port or 5432,
         "OPTIONS": options,
         # Neon pooled URLs are intended for short-lived web requests.
         "CONN_MAX_AGE": 0,
     }
 
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or None
+if not DEBUG and not DATABASE_URL:
+    raise ImproperlyConfigured(
+        "DATABASE_URL must be configured when DJANGO_DEBUG=False."
+    )
+
 DATABASES = {
     "default": _database_from_url(DATABASE_URL)
     if DATABASE_URL
@@ -158,7 +212,7 @@ MEDIA_URL = "/media/"  # Not actually served publicly
 # Storage root is completely separate from source tree, STATIC_ROOT, and MEDIA_ROOT.
 DOCUMENT_STORAGE_ROOT = os.environ.get(
     "DOCUMENT_STORAGE_ROOT",
-    str(BASE_DIR.parent / "storage" if os.name == "nt" else "/var/doctrust/storage"),
+    str(BASE_DIR.parent / "storage" if os.name == "nt" else "/tmp/doctrust/storage"),
 )
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "50"))
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_MB * 1024 * 1024
@@ -170,7 +224,12 @@ FILE_UPLOAD_TEMP_DIR = os.environ.get(
     "FILE_UPLOAD_TEMP_DIR",
     "/tmp/doctrust",
 )
-os.makedirs(FILE_UPLOAD_TEMP_DIR, mode=0o700, exist_ok=True)
+try:
+    os.makedirs(FILE_UPLOAD_TEMP_DIR, mode=0o700, exist_ok=True)
+except OSError as exc:
+    raise ImproperlyConfigured(
+        "FILE_UPLOAD_TEMP_DIR must be writable by the deployment runtime."
+    ) from exc
 
 ALLOWED_UPLOAD_EXTENSIONS = {
     ".pdf", ".docx", ".xlsx", ".pptx",
@@ -210,14 +269,15 @@ _default_dev_origins = [
     "http://127.0.0.1:5174",
     "http://localhost:5175",
     "http://127.0.0.1:5175",
-]
+] if DEBUG else []
 
 _env_cors = [
     origin.strip()
     for origin in os.environ.get("DJANGO_CORS_ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
-# Always preserve local dev origins and merge any custom environment overrides
+if FRONTEND_BASE_URL:
+    _env_cors.append(FRONTEND_BASE_URL)
 CORS_ALLOWED_ORIGINS = list(dict.fromkeys(_default_dev_origins + _env_cors))
 
 CORS_ALLOW_CREDENTIALS = True
@@ -229,19 +289,27 @@ _env_csrf = [
     for origin in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",")
     if origin.strip()
 ]
-# Always preserve local dev origins and merge any custom environment overrides
+if FRONTEND_BASE_URL:
+    _env_csrf.append(FRONTEND_BASE_URL)
 CSRF_TRUSTED_ORIGINS = list(dict.fromkeys(_default_dev_origins + _env_csrf))
 
 CSRF_COOKIE_HTTPONLY = False  # React needs to read the CSRF cookie
 CSRF_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_NAME = "csrftoken"
+CSRF_COOKIE_SECURE = not DEBUG
 
 # ── Session ──────────────────────────────────────────────────────────
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_AGE = 86400  # 24 hours
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_SSL_REDIRECT = not DEBUG
+SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+SECURE_HSTS_PRELOAD = not DEBUG
 
 # ── Default primary key ─────────────────────────────────────────────
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -262,9 +330,6 @@ DEFAULT_FROM_EMAIL = os.environ.get(
     "DJANGO_DEFAULT_FROM_EMAIL",
     "DocTrust Security <noreply@doctrust.local>",
 )
-
-# Frontend base URL for password reset links (default to local Vite origins)
-FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
 
 # Password reset token expiration (1 hour = 3600 seconds)
 PASSWORD_RESET_TIMEOUT = int(os.environ.get("PASSWORD_RESET_TIMEOUT", "3600"))
@@ -306,6 +371,11 @@ LOGGING = {
             "propagate": False,
         },
         "auditlog": {
+            "handlers": ["console"],
+            "level": "DEBUG" if DEBUG else "INFO",
+            "propagate": False,
+        },
+        "systemsettings": {
             "handlers": ["console"],
             "level": "DEBUG" if DEBUG else "INFO",
             "propagate": False,

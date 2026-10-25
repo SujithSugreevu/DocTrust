@@ -18,13 +18,17 @@ Enforces:
 import os
 import re
 import zipfile
+import logging
 from io import BytesIO
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-import magic
 from django.conf import settings
 from django.core.exceptions import ValidationError
+
+logger = logging.getLogger("documents")
+_magic_module = None
+_magic_load_attempted = False
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx"}
 
@@ -56,6 +60,44 @@ PDF_DANGEROUS_PATTERNS = [
 MAX_ZIP_ENTRIES = 1000
 MAX_UNCOMPRESSED_SIZE_BYTES = 150 * 1024 * 1024  # 150 MB
 MAX_COMPRESSION_RATIO = 10.0
+
+
+def _detect_mime(sample: bytes) -> str:
+    """
+    Detect a MIME type from file bytes without trusting the client header.
+
+    ``python-magic`` remains the preferred detector. Vercel's managed Python
+    runtime may not expose the native libmagic shared library, so import it
+    lazily and retain a strict signature fallback for the only formats this
+    application accepts. Office files are still fully inspected as OpenXML
+    archives below.
+    """
+    global _magic_module, _magic_load_attempted
+
+    if not _magic_load_attempted:
+        _magic_load_attempted = True
+        try:
+            import magic
+        except (ImportError, OSError):
+            logger.warning(
+                "python-magic is unavailable; using built-in document signatures."
+            )
+        else:
+            _magic_module = magic
+
+    if _magic_module is not None:
+        try:
+            return _magic_module.from_buffer(sample, mime=True)
+        except Exception:
+            logger.warning(
+                "python-magic failed to inspect an upload; using built-in document signatures."
+            )
+
+    if sample.startswith(b"%PDF-"):
+        return "application/pdf"
+    if sample.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        return "application/zip"
+    return "application/octet-stream"
 
 
 def sanitize_filename(raw_filename: str) -> str:
@@ -241,7 +283,7 @@ def validate_document_upload(file_obj, raw_filename: str) -> tuple[str, str, byt
 
     # Magic MIME type check on initial chunk
     sample = file_bytes[:4096]
-    detected_mime = magic.from_buffer(sample, mime=True)
+    detected_mime = _detect_mime(sample)
 
     if file_type == "PDF":
         if detected_mime != "application/pdf":

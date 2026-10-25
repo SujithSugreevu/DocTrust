@@ -2,8 +2,14 @@
 ASGI config for DocTrust project.
 """
 import os
-from django.core.asgi import get_asgi_application
+from doctrust.startup import log_startup_failure
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "doctrust.settings")
 
-application = get_asgi_application()
+try:
+    from django.core.asgi import get_asgi_application
+
+    application = get_asgi_application()
+except Exception as exc:
+    log_startup_failure("ASGI", exc)
+    raise

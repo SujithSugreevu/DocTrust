@@ -1,0 +1,3 @@
+[tool.vercel]
+# Explicit entrypoint for Vercel's current Python framework runtime.
+entrypoint = "doctrust.wsgi:application"

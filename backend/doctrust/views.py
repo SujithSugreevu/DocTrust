@@ -3,6 +3,7 @@ from django.db import connection
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
+from doctrust.startup import format_safe_exception
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +15,6 @@ def health_check(request):
     Returns HTTP 200 when database query succeeds, 503 if unreachable.
     """
     db_connected = False
-    error_message = None
-
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1;")
@@ -23,8 +22,10 @@ def health_check(request):
             if result and result[0] == 1:
                 db_connected = True
     except Exception as exc:
-        logger.exception("Health check failed to communicate with PostgreSQL")
-        error_message = str(exc)
+        logger.error(
+            "Health check failed to communicate with PostgreSQL:\n%s",
+            format_safe_exception(exc),
+        )
 
     if db_connected:
         return JsonResponse(
@@ -40,7 +41,7 @@ def health_check(request):
         {
             "status": "unhealthy",
             "database": "disconnected",
-            "error": error_message,
+            "error": "database_unavailable",
         },
         status=503,
     )
