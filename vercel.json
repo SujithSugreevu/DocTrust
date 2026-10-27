@@ -11,7 +11,7 @@
           }
         }
       ],
-      "destination": "https://doc-trust-backend.vercel.app/api/:path*"
+      "destination": "https://doctrust-backend.onrender.com/api/:path*"
     }
   ]
 }
