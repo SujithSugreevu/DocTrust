@@ -51,6 +51,9 @@ class Command(BaseCommand):
             name__in=ADMIN_DEMO_FOLDER_NAMES,
         )
         admin_documents = Document.objects.filter(owner__in=admin_users)
+        admin_alerts = SecurityAlert.objects.filter(
+            details__startswith="Demonstration notification"
+        ).exclude(alert_type__startswith="SCALE_DEMO_ALERT_")
         checks.extend([
             ("administrator fixture folders", admin_folders.count(), 5),
             ("administrator fixture documents", admin_documents.count(), 15),
@@ -68,9 +71,7 @@ class Command(BaseCommand):
             ),
             (
                 "demonstration security alerts",
-                SecurityAlert.objects.filter(
-                    details__startswith="Demonstration notification"
-                ).count(),
+                admin_alerts.count(),
                 4,
             ),
         ])
