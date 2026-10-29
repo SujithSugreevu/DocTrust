@@ -12,22 +12,29 @@ Seeds 50 realistic demonstration records into PostgreSQL for the Administrator a
 Total: 50 primary demonstration records.
 
 CONSTRAINTS & SAFETY:
-- Restricted to development/test environments (requires settings.DEBUG=True).
+- Restricted to local/test environments or an explicitly authorized one-time
+  production demo seed using DOCTRUST_DEMO_MODE and --allow-production-demo.
 - Fully idempotent: existing accounts, documents, folders, shares, and alerts are detected and preserved.
 - No existing accounts, passwords, or data are overwritten or deleted.
 """
 
 import hashlib
 import io
+import os
 import re
 import secrets
 import zipfile
 from datetime import timedelta
-from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.management.base import BaseCommand, CommandError
+from django.core.management.base import BaseCommand
+from django.db import transaction
 from django.utils import timezone
 
+from accounts.management.commands.demo_seed_support import (
+    add_demo_seed_arguments,
+    ensure_demo_seed_allowed,
+    ensure_demo_storage_is_persistent,
+)
 from documents.models import Document, Folder, DocumentShare
 from documents.storage import PrivateDocumentStorage
 from auditlog.models import AuditEvent, SecurityAlert
@@ -158,13 +165,18 @@ def generate_valid_pptx_bytes(title: str, author: str) -> bytes:
 class Command(BaseCommand):
     help = "Seeds 50 realistic demonstration records (12 employees, 15 documents with real storage, 5 folders, 8 shares, 6 audit logs, 4 alerts)."
 
+    def add_arguments(self, parser):
+        add_demo_seed_arguments(parser)
+
     def handle(self, *args, **options):
-        # 1. Environment Safety Guard
-        if not settings.DEBUG:
-            raise CommandError(
-                "SECURITY GUARD: 'seed_admin_mock_data' is strictly restricted to local development "
-                "environments where DEBUG=True. Execution halted."
-            )
+        ensure_demo_seed_allowed(options)
+        ensure_demo_storage_is_persistent()
+
+        # These supporting fixture users are data owners for the admin demo,
+        # not public login accounts.  They get an unusable password unless a
+        # developer explicitly supplies a temporary local-only fixture
+        # password through the environment.
+        mock_employee_password = os.environ.get("DOCTRUST_MOCK_EMPLOYEE_PASSWORD")
 
         self.stdout.write("============================================================")
         self.stdout.write("DocTrust — Seeding 50 Realistic Demonstration Records")
@@ -225,7 +237,7 @@ class Command(BaseCommand):
                 user = User.objects.create_user(
                     username=spec["username"],
                     email=spec["email"],
-                    password="DemoUser!2026",
+                    password=mock_employee_password or None,
                     role=User.Role.EMPLOYEE,
                     status=spec.get("status", User.Status.ACTIVE),
                     first_name=spec["first"],
@@ -241,7 +253,16 @@ class Command(BaseCommand):
             else:
                 preserved_counts["employees"] += 1
                 self.stdout.write(f"  = Preserved employee: {user.get_full_name()} ({user.username})")
-            employee_map[spec["username"]] = user
+            if user.role != User.Role.EMPLOYEE:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"  = Preserved conflicting non-Employee account '{user.username}'; "
+                        "skipping related demo records."
+                    )
+                )
+                employee_map[spec["username"]] = None
+            else:
+                employee_map[spec["username"]] = user
 
         # ------------------------------------------------------------------
         # 2. Folders and categories — 5
@@ -257,7 +278,10 @@ class Command(BaseCommand):
 
         folder_map = {}
         for spec in folder_specs:
-            owner = employee_map[spec["owner_username"]]
+            owner = employee_map.get(spec["owner_username"])
+            if owner is None:
+                folder_map[spec["name"]] = None
+                continue
             folder = Folder.objects.filter(owner=owner, name=spec["name"]).first()
             if not folder:
                 folder = Folder.objects.create(owner=owner, name=spec["name"])
@@ -395,28 +419,51 @@ class Command(BaseCommand):
             },
         ]
 
+        def build_file_bytes(spec, owner):
+            generator = {
+                Document.FileType.PDF: generate_valid_pdf_bytes,
+                Document.FileType.DOCX: generate_valid_docx_bytes,
+                Document.FileType.XLSX: generate_valid_xlsx_bytes,
+                Document.FileType.PPTX: generate_valid_pptx_bytes,
+            }.get(spec["file_type"])
+            if generator:
+                return generator(spec["name"], owner.get_full_name())
+            return f"DocTrust Content: {spec['name']}".encode("utf-8")
+
         document_map = {}
         for spec in document_specs:
-            owner = employee_map[spec["owner"]]
+            owner = employee_map.get(spec["owner"])
+            if owner is None:
+                document_map[spec["name"]] = None
+                continue
             folder = folder_map.get(spec["folder"]) if spec["folder"] else None
 
             # Verify folder ownership constraint
             if folder and folder.owner_id != owner.id:
                 folder = None
 
-            existing_doc = Document.objects.filter(owner=owner, name=spec["name"]).first()
+            existing_doc = Document.objects.filter(
+                owner=owner,
+                name=spec["name"],
+                description=spec["description"],
+            ).first()
+            conflicting_doc = Document.objects.filter(
+                owner=owner,
+                name=spec["name"],
+            ).first()
             if not existing_doc:
+                if conflicting_doc:
+                    preserved_counts["documents"] += 1
+                    document_map[spec["name"]] = None
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"  = Preserved conflicting user document: '{conflicting_doc.name}' "
+                            f"(Owner: {owner.username}); skipped demo relationships."
+                        )
+                    )
+                    continue
                 # Generate real physical bytes
-                if spec["file_type"] == Document.FileType.PDF:
-                    file_bytes = generate_valid_pdf_bytes(spec["name"], owner.get_full_name())
-                elif spec["file_type"] == Document.FileType.DOCX:
-                    file_bytes = generate_valid_docx_bytes(spec["name"], owner.get_full_name())
-                elif spec["file_type"] == Document.FileType.XLSX:
-                    file_bytes = generate_valid_xlsx_bytes(spec["name"], owner.get_full_name())
-                elif spec["file_type"] == Document.FileType.PPTX:
-                    file_bytes = generate_valid_pptx_bytes(spec["name"], owner.get_full_name())
-                else:
-                    file_bytes = f"DocTrust Content: {spec['name']}".encode("utf-8")
+                file_bytes = build_file_bytes(spec, owner)
 
                 storage_key = PrivateDocumentStorage.generate_storage_key()
                 sha256 = hashlib.sha256(file_bytes).hexdigest()
@@ -424,25 +471,37 @@ class Command(BaseCommand):
 
                 # Persist bytes through DocTrust storage adapter
                 storage.save_stream(file_bytes, storage_key)
-
-                doc = Document.objects.create(
-                    owner=owner,
-                    folder=folder,
-                    name=spec["name"],
-                    original_filename=spec["name"],
-                    description=spec["description"],
-                    file_type=spec["file_type"],
-                    size=size,
-                    sha256=sha256,
-                    storage_key=storage_key,
-                    status=spec["status"],
-                    archived_at=now - timedelta(days=10) if spec["status"] == Document.Status.ARCHIVED else None,
-                )
+                try:
+                    with transaction.atomic():
+                        doc = Document.objects.create(
+                            owner=owner,
+                            folder=folder,
+                            name=spec["name"],
+                            original_filename=spec["name"],
+                            description=spec["description"],
+                            file_type=spec["file_type"],
+                            size=size,
+                            sha256=sha256,
+                            storage_key=storage_key,
+                            status=spec["status"],
+                            archived_at=now - timedelta(days=10) if spec["status"] == Document.Status.ARCHIVED else None,
+                        )
+                except Exception:
+                    try:
+                        storage.delete(storage_key)
+                    except Exception:
+                        pass
+                    raise
                 created_counts["documents"] += 1
                 self.stdout.write(f"  + Created document: '{doc.name}' ({doc.file_type}, {doc.size} bytes, Owner: {owner.username})")
                 document_map[spec["name"]] = doc
             else:
                 preserved_counts["documents"] += 1
+                if existing_doc.folder_id != getattr(folder, "id", None):
+                    existing_doc.folder = folder
+                    existing_doc.save(update_fields=["folder", "updated_at"])
+                if not storage.exists(existing_doc.storage_key):
+                    storage.save_stream(build_file_bytes(spec, owner), existing_doc.storage_key)
                 self.stdout.write(f"  = Preserved document: '{existing_doc.name}' ({existing_doc.file_type}, Owner: {owner.username})")
                 document_map[spec["name"]] = existing_doc
 
@@ -490,7 +549,7 @@ class Command(BaseCommand):
                 "actor": "elena.rostova",
                 "action": AuditEvent.Action.DOCUMENT_UPLOAD,
                 "target_type": "documents.Document",
-                "target_id": str(document_map["Q3_Financial_Performance_Audit.pdf"].id),
+                "document_name": "Q3_Financial_Performance_Audit.pdf",
                 "ip": "192.168.10.15",
                 "marker": "demo_audit_upload_q3",
             },
@@ -498,7 +557,7 @@ class Command(BaseCommand):
                 "actor": "sarah.jenkins",
                 "action": AuditEvent.Action.DOCUMENT_SHARE,
                 "target_type": "documents.Document",
-                "target_id": str(document_map["Standard_Employment_Agreement.docx"].id),
+                "document_name": "Standard_Employment_Agreement.docx",
                 "ip": "192.168.10.22",
                 "marker": "demo_audit_share_agreement",
             },
@@ -506,7 +565,7 @@ class Command(BaseCommand):
                 "actor": "marcus.vance",
                 "action": AuditEvent.Action.DOCUMENT_DOWNLOAD,
                 "target_type": "documents.Document",
-                "target_id": str(document_map["Employee_Handbook_2026.pdf"].id),
+                "document_name": "Employee_Handbook_2026.pdf",
                 "ip": "192.168.10.45",
                 "marker": "demo_audit_download_handbook",
             },
@@ -514,7 +573,7 @@ class Command(BaseCommand):
                 "actor": "david.kim",
                 "action": AuditEvent.Action.DOCUMENT_UPDATE,
                 "target_type": "documents.Document",
-                "target_id": str(document_map["Brand_Identity_Guidelines_2026.pdf"].id),
+                "document_name": "Brand_Identity_Guidelines_2026.pdf",
                 "ip": "192.168.10.51",
                 "marker": "demo_audit_update_brand",
             },
@@ -522,7 +581,7 @@ class Command(BaseCommand):
                 "actor": "elena.rostova",
                 "action": AuditEvent.Action.DOCUMENT_ARCHIVE,
                 "target_type": "documents.Document",
-                "target_id": str(document_map["Corporate_Tax_Filing_FY25.xlsx"].id),
+                "document_name": "Corporate_Tax_Filing_FY25.xlsx",
                 "ip": "192.168.10.15",
                 "marker": "demo_audit_archive_tax",
             },
@@ -530,7 +589,7 @@ class Command(BaseCommand):
                 "actor": "marcus.vance",
                 "action": AuditEvent.Action.LOGIN_SUCCESS,
                 "target_type": "accounts.User",
-                "target_id": str(employee_map["marcus.vance"].id),
+                "user_name": "marcus.vance",
                 "ip": "192.168.10.45",
                 "marker": "demo_audit_login_marcus",
             },
@@ -539,11 +598,23 @@ class Command(BaseCommand):
         for spec in audit_specs:
             actor = employee_map.get(spec["actor"])
             marker = spec["marker"]
+            if actor is None:
+                continue
+            if spec["target_type"] == "documents.Document":
+                target = document_map.get(spec.get("document_name"))
+                if target is None:
+                    continue
+                target_id = str(target.id)
+            else:
+                target = employee_map.get(spec.get("user_name"))
+                if target is None:
+                    continue
+                target_id = str(target.id)
 
             existing_event = AuditEvent.objects.filter(
                 actor=actor,
                 action=spec["action"],
-                target_id=spec["target_id"],
+                target_id=target_id,
             ).first()
 
             if not existing_event:
@@ -551,7 +622,7 @@ class Command(BaseCommand):
                     actor=actor,
                     action=spec["action"],
                     target_type=spec["target_type"],
-                    target_id=spec["target_id"],
+                    target_id=target_id,
                     ip_address=spec["ip"],
                     metadata={
                         "notes": f"Demonstration audit trail record ({marker})",

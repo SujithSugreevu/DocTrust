@@ -1,3 +1,5 @@
+import { apiUrl } from './api.js'
+
 const TAB_SESSION_KEY = 'doctrustTabSession'
 
 export function getTabSessionKey() {
@@ -23,5 +25,5 @@ export function fetchWithTabSession(url, options = {}) {
     headers.set('X-DocTrust-Session', sessionKey)
   }
 
-  return fetch(url, { ...options, headers })
+  return fetch(/^https?:\/\//i.test(url) ? url : apiUrl(url), { ...options, headers })
 }

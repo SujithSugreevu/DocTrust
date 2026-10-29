@@ -164,13 +164,23 @@ def _database_from_url(url):
 
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or None
+DATABASE_URL_UNPOOLED = os.environ.get("DATABASE_URL_UNPOOLED", "").strip() or None
 if not DEBUG and not DATABASE_URL:
     PRODUCTION_CONFIGURATION_ERRORS.append(
         "DATABASE_URL must be configured when DJANGO_DEBUG=False."
     )
 
+_use_unpooled_database = os.environ.get(
+    "DOCTRUST_USE_UNPOOLED_DATABASE", ""
+).strip().lower() in ("true", "1", "yes", "on")
+_database_connection_url = (
+    DATABASE_URL_UNPOOLED
+    if DATABASE_URL_UNPOOLED and _use_unpooled_database
+    else DATABASE_URL
+)
+
 try:
-    _default_database = _database_from_url(DATABASE_URL) if DATABASE_URL else {
+    _default_database = _database_from_url(_database_connection_url) if _database_connection_url else {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": os.environ.get("POSTGRES_DB", "doctrust_db"),
         "USER": os.environ.get("POSTGRES_USER", "doctrust_user"),

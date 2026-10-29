@@ -18,7 +18,6 @@ import {
   uploadDocument,
   updateDocument,
   downloadDocument as downloadDocService,
-  viewDocument as viewDocService,
   getDocumentViewBlob,
   deleteDocument as deleteDocService,
   archiveDocument as archiveDocService,
@@ -118,12 +117,16 @@ function DocumentPreviewModal({ document, onClose, onDownload, canDownload }) {
   useEffect(() => {
     let isMounted = true
     let createdUrl = null
-    setLoading(true)
-    setError('')
 
-    getDocumentViewBlob(document.rawDoc || document)
+    Promise.resolve()
+      .then(() => {
+        if (!isMounted) return null
+        setLoading(true)
+        setError('')
+        return getDocumentViewBlob(document.rawDoc || document)
+      })
       .then(async (blob) => {
-        if (!isMounted) return
+        if (!isMounted || !blob) return
         const mime = blob.type || ''
         const ext = (document.name || '').split('.').pop()?.toLowerCase()
         const isPdf = mime.includes('pdf') || ext === 'pdf'
@@ -397,6 +400,8 @@ export default function EmployeePortal() {
   const [activity, setActivity] = useState([])
   const [folders, setFolders] = useState([])
   const [notifications, setNotifications] = useState([])
+  const [dataLoading, setDataLoading] = useState(true)
+  const [dataLoadError, setDataLoadError] = useState('')
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [query, setQuery] = useState('')
@@ -432,6 +437,8 @@ export default function EmployeePortal() {
     if (dataLoadRequest.current) return dataLoadRequest.current
 
     const load = async () => {
+      setDataLoading(true)
+      setDataLoadError('')
       try {
       const user = await getCurrentUser()
       if (user) {
@@ -481,7 +488,7 @@ export default function EmployeePortal() {
         listOwnedDocumentShares(),
       ])
       const [recipientResult, sharedResult, activityResult, notificationResult, ownedSharesResult] = optionalResults
-      const responseOr = (result, fallback) => result.status === 'fulfilled' ? result.value : fallback
+      const responseOr = (result) => result.status === 'fulfilled' ? result.value : null
       const optionalFailures = [
         ['share recipients', recipientResult],
         ['shared documents', sharedResult],
@@ -489,48 +496,56 @@ export default function EmployeePortal() {
         ['notifications', notificationResult],
         ['document sharing details', ownedSharesResult],
       ].filter(([, result]) => result.status === 'rejected').map(([label]) => label)
-      const recipientResponse = responseOr(recipientResult, [])
-      const sharedResponse = responseOr(sharedResult, { results: [] })
-      const activityResponse = responseOr(activityResult, { results: [] })
-      const notificationResponse = responseOr(notificationResult, { results: [] })
-      const ownedSharesResponse = responseOr(ownedSharesResult, [])
-      setSharesLoadError('')
-      const recipients = Array.isArray(recipientResponse) ? recipientResponse : []
-      const recipientById = new Map(recipients.map((recipient) => [recipient.id, recipient]))
-      setShareRecipients(recipients)
-      setShares((Array.isArray(ownedSharesResponse) ? ownedSharesResponse : []).map((share) => {
-        const recipient = recipientById.get(share.recipient)
-        const expired = share.expires_at && new Date(share.expires_at) <= new Date()
-        return {
-          id: share.id,
-          documentId: share.document,
-          recipient: share.recipient_name || share.recipient_username,
-          email: share.recipient_email || recipient?.email || '',
-          recipientId: share.recipient,
-          permission: share.permission === 'EDIT' ? 'Edit' : share.permission === 'DOWNLOAD' ? 'Download' : 'Read',
-          date: new Date(share.created_at).toLocaleDateString(),
-          status: expired ? 'Expired' : 'Active',
-          expiry: share.expires_at ? new Date(share.expires_at).toISOString().slice(0, 10) : '',
+      const recipientResponse = responseOr(recipientResult)
+      const sharedResponse = responseOr(sharedResult)
+      const activityResponse = responseOr(activityResult)
+      const notificationResponse = responseOr(notificationResult)
+      const ownedSharesResponse = responseOr(ownedSharesResult)
+      if (!optionalFailures.includes('document sharing details')) setSharesLoadError('')
+
+      let shared = sharedDocuments
+      if (recipientResponse !== null) {
+        const recipients = Array.isArray(recipientResponse) ? recipientResponse : []
+        setShareRecipients(recipients)
+        const recipientById = new Map(recipients.map((recipient) => [recipient.id, recipient]))
+        if (ownedSharesResponse !== null) {
+          setShares((Array.isArray(ownedSharesResponse) ? ownedSharesResponse : []).map((share) => {
+            const recipient = recipientById.get(share.recipient)
+            const expired = share.expires_at && new Date(share.expires_at) <= new Date()
+            return {
+              id: share.id,
+              documentId: share.document,
+              recipient: share.recipient_name || share.recipient_username,
+              email: share.recipient_email || recipient?.email || '',
+              recipientId: share.recipient,
+              permission: share.permission === 'EDIT' ? 'Edit' : share.permission === 'DOWNLOAD' ? 'Download' : 'Read',
+              date: new Date(share.created_at).toLocaleDateString(),
+              status: expired ? 'Expired' : 'Active',
+              expiry: share.expires_at ? new Date(share.expires_at).toISOString().slice(0, 10) : '',
+            }
+          }))
         }
-      }))
-      const shared = (sharedResponse?.results || []).map((document) => ({
-        id: document.id,
-        name: document.name,
-        category: document.folder_name || 'Documents',
-        folder: document.folder_name || 'Documents',
-        folderId: document.folder,
-        type: document.file_type,
-        size: document.size_display || formatFileSize(document.size),
-        modified: document.created_at
-          ? new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(document.created_at))
-          : '—',
-        owner: document.owner_name,
-        owner_email: document.owner_email || '',
-        permission: document.permission,
-        description: document.description || '',
-        rawDoc: document,
-      }))
-      setSharedDocuments(shared)
+      }
+      if (sharedResponse !== null) {
+        shared = (sharedResponse?.results || []).map((document) => ({
+          id: document.id,
+          name: document.name,
+          category: document.folder_name || 'Documents',
+          folder: document.folder_name || 'Documents',
+          folderId: document.folder,
+          type: document.file_type,
+          size: document.size_display || formatFileSize(document.size),
+          modified: document.created_at
+            ? new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(document.created_at))
+            : '—',
+          owner: document.owner_name,
+          owner_email: document.owner_email || '',
+          permission: document.permission,
+          description: document.description || '',
+          rawDoc: document,
+        }))
+        setSharedDocuments(shared)
+      }
       // Now that both owned and shared docs are loaded, validate selectedDocumentId.
       // If the persisted ID doesn't match any available document, fall back.
       setSelectedDocumentId((current) => {
@@ -540,23 +555,27 @@ export default function EmployeePortal() {
         if (existsInOwned || existsInShared) return current
         return mapped[0]?.id || ''
       })
-      const fetchedActivity = (activityResponse?.results || []).map((event) => ({
-        id: event.id,
-        timestamp: event.timestamp,
-        user: userName,
-        action: event.action_label,
-        actionCode: event.action,
-        documentId: event.target_id,
-        documentName: event.document_name || '',
-        details: event.document_name || event.target_type || '',
-        result: event.outcome,
-      }))
-      setActivity(fetchedActivity)
-      setNotifications((notificationResponse?.results || []).map((notification) => ({
-        id: notification.id,
-        message: notification.message,
-        read: notification.is_read,
-      })))
+      if (activityResponse !== null) {
+        const fetchedActivity = (activityResponse?.results || []).map((event) => ({
+          id: event.id,
+          timestamp: event.timestamp,
+          user: userName,
+          action: event.action_label,
+          actionCode: event.action,
+          documentId: event.target_id,
+          documentName: event.document_name || '',
+          details: event.document_name || event.target_type || '',
+          result: event.outcome,
+        }))
+        setActivity(fetchedActivity)
+      }
+      if (notificationResponse !== null) {
+        setNotifications((notificationResponse?.results || []).map((notification) => ({
+          id: notification.id,
+          message: notification.message,
+          read: notification.is_read,
+        })))
+      }
       let storageError = ''
       try {
         setStorageUsage(await getStorageUsage())
@@ -570,12 +589,12 @@ export default function EmployeePortal() {
       }
       return { ok: true, storageError, optionalFailures }
       } catch (err) {
-        setDocuments([])
-        setBackendFolders([])
-        setFolders([])
         const error = err.message || 'Unable to load your documents.'
+        setDataLoadError(error)
         setNotice(error)
         return { ok: false, error }
+      } finally {
+        setDataLoading(false)
       }
     }
 
@@ -1548,7 +1567,9 @@ export default function EmployeePortal() {
       <nav aria-label="Employee navigation" className="grid grid-cols-2 gap-1 md:flex md:flex-col">{navItems.map(([label, path, Icon]) => <button key={path} type="button" aria-current={location.pathname === path ? 'page' : undefined} onClick={() => path.endsWith('/logout') ? setModal({ type: 'logout' }) : navigate(path)} className={`flex items-center gap-2 rounded-lg px-3 py-2.5 text-left text-xs transition ${location.pathname === path ? 'bg-emerald-700 font-semibold text-white' : 'text-white/80 hover:bg-white/10'}`}><Icon size={15} />{label}</button>)}</nav>
     </aside>
     <div className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8"><header className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-bold tracking-tight">{title[0]}</h1><p className="mt-1 text-sm text-slate-500">{title[1]}</p></div><div className="flex items-center gap-2"><div className="relative"><button type="button" aria-expanded={notificationOpen} onClick={() => setNotificationOpen(!notificationOpen)} className="relative flex items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 py-2 text-xs font-semibold text-emerald-800"><Bell size={14} /> Notifications{unreadCount > 0 && <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-red-500 text-[10px] text-white">{unreadCount}</span>}</button>{notificationOpen && <div className="absolute right-0 z-30 mt-2 w-[min(90vw,330px)] rounded-xl border border-slate-100 bg-white p-3 shadow-xl"><div className="mb-2 flex items-center justify-between"><strong className="text-sm">Notifications</strong><button type="button" onClick={markAllNotificationsRead} className="text-xs font-semibold text-emerald-800">Mark all read</button></div>{notifications.map((item) => <button key={item.id} type="button" onClick={() => { markNotificationRead(item.id); setNotificationOpen(false); navigate('/employee/activity') }} className={`mb-1 block w-full rounded-lg p-2 text-left text-xs ${item.read ? 'text-slate-500' : 'bg-emerald-50 text-slate-700'}`}>{item.message}</button>)}</div>}</div><button type="button" onClick={() => navigate('/employee/profile')} className="flex items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 py-2 text-xs font-semibold"><UserRound size={14} /> Profile</button><div className="hidden items-center gap-2 sm:flex"><span className="flex size-9 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-800">{profile.name.split(' ').map((part) => part[0]).join('')}</span><div className="text-xs"><p className="font-bold">{profile.name}</p><p className="text-emerald-800">Employee</p></div></div></div></header>
-      {notice && <div role="status" className="mb-4 flex items-center justify-between gap-2 rounded-xl bg-emerald-50 px-3 py-2.5 text-sm text-emerald-900">{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss message"><X size={15} /></button></div>}
+       {notice && <div role="status" className="mb-4 flex items-center justify-between gap-2 rounded-xl bg-emerald-50 px-3 py-2.5 text-sm text-emerald-900">{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss message"><X size={15} /></button></div>}
+       {dataLoading && <p role="status" className="mb-4 text-sm text-slate-500">Loading persisted workspace data…</p>}
+       {dataLoadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-800"><span>{dataLoadError}</span><button type="button" onClick={() => loadData()} className="font-semibold underline">Retry</button></div>}
       {page === 'documents' ? renderDocuments() : page === 'upload' ? renderUpload() : page === 'folders' ? renderFolders() : page === 'received' ? renderReceivedDocuments() : page === 'shared' ? renderShares() : page === 'permissions' ? renderPermissions() : page === 'activity' ? renderActivity() : page === 'profile' ? renderProfile() : renderDashboard()}
       <p className="mt-5 text-xs text-slate-500">DocTrust Employee Workspace. Connected to secure backend storage and audit logging.</p>
     </div>

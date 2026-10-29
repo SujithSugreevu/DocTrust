@@ -9,11 +9,13 @@ import {
   getTabSessionKey,
   setTabSessionKey,
 } from './tabSession.js'
+import { apiUrl } from './api.js'
 
 // A route guard, page-level data loader, and React Strict Mode can all ask for
 // the current user at once. Keep that normal navigation burst to one request
 // and reuse the verified result briefly for the same tab session.
 const SESSION_USER_CACHE_MS = 5_000
+const AUTH_SERVICE_UNAVAILABLE_MESSAGE = 'Authentication service is temporarily unavailable. Please try again in a moment.'
 let currentUserCache = null
 let currentUserRequest = null
 let sessionRetryNotBefore = 0
@@ -69,18 +71,27 @@ export async function getCsrfToken({ forceRefresh = false } = {}) {
   }
 
   try {
-    const response = await fetch('/api/auth/csrf/', {
+    const response = await fetch(apiUrl('/api/auth/csrf/'), {
       method: 'GET',
       credentials: 'include',
     })
     if (!response.ok) {
-      throw new Error('Unable to establish secure CSRF session.')
+      const error = new Error(
+        response.status >= 500
+          ? AUTH_SERVICE_UNAVAILABLE_MESSAGE
+          : 'Unable to establish secure CSRF session.',
+      )
+      error.status = response.status
+      throw error
     }
     const data = await response.json()
     return data.csrfToken || getCookie('csrftoken') || ''
   } catch (error) {
     console.error('CSRF fetch error:', error)
-    return getCookie('csrftoken') || ''
+    if (error?.status || error?.message === AUTH_SERVICE_UNAVAILABLE_MESSAGE) {
+      throw error
+    }
+    throw new Error(AUTH_SERVICE_UNAVAILABLE_MESSAGE, { cause: error })
   }
 }
 
@@ -91,20 +102,26 @@ export async function getCsrfToken({ forceRefresh = false } = {}) {
 export async function login({ username, password, rememberMe = false, expectedRole = 'ADMIN' }) {
   const csrfToken = await getCsrfToken({ forceRefresh: true })
 
-  const response = await fetch('/api/auth/login/', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-CSRFToken': csrfToken,
-    },
-    credentials: 'include',
-    body: JSON.stringify({
-      username: username.trim(),
-      password,
-      expected_role: expectedRole,
-      remember_me: Boolean(rememberMe),
-    }),
-  })
+  let response
+  try {
+    response = await fetch(apiUrl('/api/auth/login/'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken,
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        username: username.trim(),
+        password,
+        expected_role: expectedRole,
+        remember_me: Boolean(rememberMe),
+      }),
+    })
+  } catch (error) {
+    console.error('Login request error:', error)
+    throw new Error(AUTH_SERVICE_UNAVAILABLE_MESSAGE, { cause: error })
+  }
 
   const data = await response.json().catch(() => ({}))
 
@@ -112,8 +129,12 @@ export async function login({ username, password, rememberMe = false, expectedRo
     const errorMessage =
       data.detail ||
       (data.errors && Object.values(data.errors).flat().join(' ')) ||
-      'Invalid username/email or password.'
-    throw new Error(errorMessage)
+      (response.status >= 500
+        ? AUTH_SERVICE_UNAVAILABLE_MESSAGE
+        : 'Invalid username/email or password.')
+    const error = new Error(errorMessage)
+    error.status = response.status
+    throw error
   }
 
   if (!data.mfa_required) {
@@ -129,7 +150,7 @@ export async function login({ username, password, rememberMe = false, expectedRo
 export async function requestPasswordReset(email) {
   const csrfToken = await getCsrfToken({ forceRefresh: true })
 
-  const response = await fetch('/api/auth/password-reset/', {
+  const response = await fetch(apiUrl('/api/auth/password-reset/'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -158,7 +179,7 @@ export async function requestPasswordReset(email) {
 export async function confirmPasswordReset({ uid, token, newPassword, confirmPassword }) {
   const csrfToken = await getCsrfToken({ forceRefresh: true })
 
-  const response = await fetch('/api/auth/password-reset/confirm/', {
+  const response = await fetch(apiUrl('/api/auth/password-reset/confirm/'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -367,7 +388,7 @@ export async function disableTwoFactor({ password, code }) {
  */
 export async function verifyLoginTwoFactor({ mfaToken, code }) {
   const csrfToken = await getCsrfToken({ forceRefresh: true })
-  const response = await fetch('/api/auth/2fa/verify-login/', {
+  const response = await fetch(apiUrl('/api/auth/2fa/verify-login/'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -390,7 +411,7 @@ export async function verifyLoginTwoFactor({ mfaToken, code }) {
  */
 export async function setupLoginTwoFactor({ mfaToken, action = 'verify', code = '' }) {
   const csrfToken = await getCsrfToken({ forceRefresh: true })
-  const response = await fetch('/api/auth/2fa/setup-login/', {
+  const response = await fetch(apiUrl('/api/auth/2fa/setup-login/'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

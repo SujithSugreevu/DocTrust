@@ -57,8 +57,8 @@ pip install -r backend/requirements.txt
 # Run migrations
 python backend/manage.py migrate
 
-# Seed initial test accounts (admin_demo & employee_demo)
-python backend/manage.py seed_dev_accounts
+# Create or repair the two demo accounts. Passwords are requested without echoing.
+python backend/manage.py seed_dev_users --prompt-for-passwords
 
 # Start Django development server
 python backend/manage.py runserver 127.0.0.1:8000
@@ -70,6 +70,65 @@ npm install
 npm run dev
 ```
 The React frontend is available at `http://localhost:5173`.
+
+### Demo account repair and database selection
+
+`seed_dev_users` is the supported command. It creates missing accounts, repairs
+their `ADMIN`/`EMPLOYEE` role and active status, and preserves existing
+passwords unless `--reset-passwords` is explicitly supplied. Passwords are
+never stored in source code or printed by the command.
+
+To seed the complete persisted demonstration dataset (users, folders,
+documents, shares, audit events, notifications, and alerts), run:
+
+```bash
+python backend/manage.py seed_demo_data --prompt-for-passwords
+python backend/manage.py verify_demo_data
+```
+
+The command creates approximately 550 coordinated demo records across the
+existing models. It is idempotent and preserves existing records. It is
+intentionally not run automatically during web-service startup, so a restart
+cannot create or overwrite application data.
+
+To explicitly rotate both demo passwords locally, run:
+
+```bash
+python backend/manage.py seed_dev_users --reset-passwords --prompt-for-passwords
+```
+
+For a deliberate one-time Render repair, set `DOCTRUST_DEMO_MODE=1`,
+`DOCTRUST_DEMO_ADMIN_PASSWORD`, and `DOCTRUST_DEMO_EMPLOYEE_PASSWORD` as
+temporary Render environment variables. Before seeding documents, attach a
+Render persistent disk to the backend service and set
+`DOCUMENT_STORAGE_ROOT=/var/data/doctrust/storage` (or the disk's actual mount
+path). Then run from the Render shell:
+
+```bash
+cd backend
+python manage.py seed_demo_data --allow-production-demo --reset-passwords
+python manage.py verify_demo_data
+```
+
+Remove the temporary password variables and `DOCTRUST_DEMO_MODE` immediately
+after the command succeeds. The command refuses to touch a `DEBUG=False`
+database without both explicit production flags and refuses to write demo
+document bytes to an unconfigured or `/tmp` storage root.
+
+When `DATABASE_URL` is present, Django uses it in preference to
+`POSTGRES_*`; local management commands and the Vite proxy therefore operate
+against that PostgreSQL database. To use the Docker PostgreSQL database
+instead, unset `DATABASE_URL`/`DATABASE_URL_UNPOOLED` for the local process
+and start Docker first. The deployed Vercel frontend routes `/api/*` to the
+Render backend through `vercel.json`. If the frontend is deployed as a
+separate Render static site, configure the build environment variable
+`VITE_API_BASE_URL=https://doctrust-backend.onrender.com/api` instead.
+
+The web process uses pooled `DATABASE_URL`. For migrations or explicit
+administrative seed/verification work, set `DOCTRUST_USE_UNPOOLED_DATABASE=1`
+only after confirming that `DATABASE_URL_UNPOOLED` is current and valid; the
+current local unpooled credential was rejected during inspection, so it must be
+rotated before using that option.
 
 ---
 

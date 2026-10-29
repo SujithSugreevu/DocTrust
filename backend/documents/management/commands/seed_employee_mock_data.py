@@ -1,13 +1,19 @@
 """Seed safe, idempotent Employee-portal demonstration data."""
 
 import hashlib
+import os
 from datetime import timedelta
 
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 from django.utils import timezone
 
+from accounts.management.commands.demo_seed_support import (
+    add_demo_seed_arguments,
+    ensure_demo_seed_allowed,
+    ensure_demo_storage_is_persistent,
+)
 from accounts.management.commands.seed_admin_mock_data import (
     generate_valid_docx_bytes,
     generate_valid_pdf_bytes,
@@ -29,13 +35,17 @@ class Command(BaseCommand):
         "folders, shares, activity, and notifications."
     )
 
+    def add_arguments(self, parser):
+        add_demo_seed_arguments(parser)
+
     def handle(self, *args, **options):
-        if not settings.DEBUG:
-            raise CommandError("seed_employee_mock_data is restricted to DEBUG development/test environments.")
+        ensure_demo_seed_allowed(options)
+        ensure_demo_storage_is_persistent()
 
         now = timezone.now()
         storage = PrivateDocumentStorage()
-        counts = {key: 0 for key in ("employees", "folders", "documents", "documents_migrated", "shares", "activity", "notifications")}
+        mock_employee_password = os.environ.get("DOCTRUST_MOCK_EMPLOYEE_PASSWORD")
+        counts = {key: 0 for key in ("employees", "folders", "documents", "documents_migrated", "documents_repaired", "shares", "activity", "notifications")}
         existing = {key: 0 for key in counts}
 
         employee_specs = [
@@ -54,7 +64,7 @@ class Command(BaseCommand):
                 user = User.objects.create_user(
                     username=username,
                     email=f"{username}@example.test",
-                    password="DemoEmployee!2026",
+                    password=mock_employee_password or None,
                     first_name=first,
                     last_name=last,
                     role=User.Role.EMPLOYEE,
@@ -66,6 +76,14 @@ class Command(BaseCommand):
             else:
                 existing["employees"] += 1
             employees[username] = user
+            if user.role != User.Role.EMPLOYEE:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"  = Preserved conflicting non-Employee account '{username}'; "
+                        "related demo records will be skipped."
+                    )
+                )
+                employees[username] = None
 
         try:
             primary_employee = User.objects.get(
@@ -159,7 +177,7 @@ class Command(BaseCommand):
             "PPTX": generate_valid_pptx_bytes,
         }
         for name, file_type, owner_name, folder_name, summary in document_specs:
-            legacy_owner = employees[owner_name]
+            legacy_owner = employees.get(owner_name) or primary_employee
             description = f"Demonstration data: {summary}"
             # A previous version of this command distributed documents across
             # seed-only employees.  Match only this command's demonstrably
@@ -174,17 +192,25 @@ class Command(BaseCommand):
                 content = generators[file_type](name, primary_employee.get_full_name() or primary_employee.username)
                 key = PrivateDocumentStorage.generate_storage_key()
                 storage.save_stream(content, key)
-                document = Document.objects.create(
-                    owner=primary_employee,
-                    folder=folders.get(folder_name),
-                    name=name,
-                    original_filename=name,
-                    description=description,
-                    file_type=file_type,
-                    size=len(content),
-                    sha256=hashlib.sha256(content).hexdigest(),
-                    storage_key=key,
-                )
+                try:
+                    with transaction.atomic():
+                        document = Document.objects.create(
+                            owner=primary_employee,
+                            folder=folders.get(folder_name),
+                            name=name,
+                            original_filename=name,
+                            description=description,
+                            file_type=file_type,
+                            size=len(content),
+                            sha256=hashlib.sha256(content).hexdigest(),
+                            storage_key=key,
+                        )
+                except Exception:
+                    try:
+                        storage.delete(key)
+                    except Exception:
+                        pass
+                    raise
                 counts["documents"] += 1
             else:
                 existing["documents"] += 1
@@ -202,6 +228,12 @@ class Command(BaseCommand):
                     document.folder = folders.get(folder_name)
                     document.save(update_fields=["owner", "folder", "updated_at"])
                     counts["documents_migrated"] += 1
+                if not storage.exists(document.storage_key):
+                    storage.save_stream(
+                        generators[file_type](name, primary_employee.get_full_name() or primary_employee.username),
+                        document.storage_key,
+                    )
+                    counts["documents_repaired"] += 1
             documents[name] = document
 
         share_specs = [
@@ -217,8 +249,11 @@ class Command(BaseCommand):
             ("Data_Processing_Addendum.pdf", "aria.hughes.demo", DocumentShare.Permission.VIEW),
         ]
         for doc_name, recipient_name, permission in share_specs:
+            recipient = employees.get(recipient_name)
+            if recipient is None:
+                continue
             _share, created = DocumentShare.objects.get_or_create(
-                document=documents[doc_name], recipient=employees[recipient_name],
+                document=documents[doc_name], recipient=recipient,
                 defaults={"permission": permission, "expires_at": now + timedelta(days=90)},
             )
             counts["shares"] += int(created)
@@ -235,7 +270,9 @@ class Command(BaseCommand):
             ("chen.wei.demo", AuditEvent.Action.DOCUMENT_ARCHIVE, "Incident_Response_Runbook.docx", "archive-runbook"),
         ]
         for actor_name, action, document_name, marker in activity_specs:
-            actor = employees[actor_name]
+            actor = employees.get(actor_name)
+            if actor is None:
+                continue
             if AuditEvent.objects.filter(metadata__notes=f"employee-seed:{marker}").exists():
                 existing["activity"] += 1
                 continue
@@ -258,9 +295,12 @@ class Command(BaseCommand):
             ("aria.hughes.demo", "Data_Processing_Addendum.pdf", "Data Processing Addendum was shared with you for review."),
         ]
         for index, (recipient_name, document_name, message) in enumerate(notification_specs, start=1):
+            recipient = employees.get(recipient_name)
+            if recipient is None:
+                continue
             _notification, created = EmployeeNotification.objects.get_or_create(
                 event_key=f"employee-seed:notification:{index}",
-                defaults={"recipient": employees[recipient_name], "document": documents[document_name], "message": message},
+                defaults={"recipient": recipient, "document": documents[document_name], "message": message},
             )
             counts["notifications"] += int(created)
             existing["notifications"] += int(not created)
@@ -272,6 +312,7 @@ class Command(BaseCommand):
             owner=primary_employee,
             description__startswith="Demonstration data:",
         ).count()
-        self.stdout.write(f"  total records created: {sum(value for key, value in counts.items() if key != 'documents_migrated')}")
+        self.stdout.write(f"  total records created: {sum(value for key, value in counts.items() if key not in {'documents_migrated', 'documents_repaired'})}")
         self.stdout.write(f"  demonstration documents migrated: {counts['documents_migrated']}")
+        self.stdout.write(f"  demonstration document files repaired: {counts['documents_repaired']}")
         self.stdout.write(f"  demonstration documents: {demo_document_count}; target: 50")

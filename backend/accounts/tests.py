@@ -8,6 +8,7 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APIClient as DRFAPIClient
+from unittest.mock import patch
 
 User = get_user_model()
 
@@ -557,25 +558,68 @@ class AuthenticationTests(TestCase):
         from django.core.management import call_command
         User.objects.filter(username__in=["admin_demo", "employee_demo"]).delete()
 
-        with override_settings(DEBUG=True):
-            call_command("seed_dev_users")
-            admin_user = User.objects.get(username="admin_demo")
-            employee_user = User.objects.get(username="employee_demo")
+        with patch.dict(
+            "os.environ",
+            {
+                "DOCTRUST_DEMO_ADMIN_PASSWORD": "AdminDemo!2026",
+                "DOCTRUST_DEMO_EMPLOYEE_PASSWORD": "EmployeeDemo!2026",
+            },
+            clear=False,
+        ):
+            with override_settings(DEBUG=True):
+                call_command("seed_dev_users")
+                admin_user = User.objects.get(username="admin_demo")
+                employee_user = User.objects.get(username="employee_demo")
 
-            self.assertEqual(admin_user.role, User.Role.ADMIN)
-            self.assertTrue(admin_user.is_staff)
-            self.assertTrue(admin_user.is_superuser)
-            self.assertTrue(admin_user.check_password("AdminDemo!2026"))
+                self.assertEqual(admin_user.role, User.Role.ADMIN)
+                self.assertTrue(admin_user.is_staff)
+                self.assertTrue(admin_user.is_superuser)
+                self.assertTrue(admin_user.check_password("AdminDemo!2026"))
 
-            self.assertEqual(employee_user.role, User.Role.EMPLOYEE)
-            self.assertFalse(employee_user.is_staff)
-            self.assertFalse(employee_user.is_superuser)
-            self.assertTrue(employee_user.check_password("EmployeeDemo!2026"))
+                self.assertEqual(employee_user.role, User.Role.EMPLOYEE)
+                self.assertFalse(employee_user.is_staff)
+                self.assertFalse(employee_user.is_superuser)
+                self.assertTrue(employee_user.check_password("EmployeeDemo!2026"))
 
-            # Idempotent check
-            call_command("seed_dev_users")
-            self.assertEqual(User.objects.filter(username="admin_demo").count(), 1)
-            self.assertEqual(User.objects.filter(username="employee_demo").count(), 1)
+                # Idempotent check: no password reset is requested on rerun.
+                call_command("seed_dev_users")
+                self.assertEqual(User.objects.filter(username="admin_demo").count(), 1)
+                self.assertEqual(User.objects.filter(username="employee_demo").count(), 1)
+
+    def test_seed_dev_users_repairs_role_status_without_overwriting_password(self):
+        from django.core.management import call_command
+
+        existing_password = "ExistingDemoPassword!2026"
+        demo_user = User.objects.create_user(
+            username="employee_demo",
+            email="existing.employee@example.com",
+            password=existing_password,
+            role=User.Role.ADMIN,
+            status=User.Status.SUSPENDED,
+            is_active=False,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"DOCTRUST_DEMO_ADMIN_PASSWORD": "AdminDemo!2026"},
+            clear=False,
+        ):
+            with override_settings(DEBUG=True):
+                call_command("seed_dev_users")
+
+        demo_user.refresh_from_db()
+        self.assertEqual(demo_user.role, User.Role.EMPLOYEE)
+        self.assertEqual(demo_user.status, User.Status.ACTIVE)
+        self.assertTrue(demo_user.is_active)
+        self.assertTrue(demo_user.check_password(existing_password))
+
+    def test_seed_dev_users_requires_explicit_production_demo_mode(self):
+        from django.core.management import CommandError, call_command
+
+        with patch.dict("os.environ", {"DOCTRUST_DEMO_MODE": ""}, clear=False):
+            with override_settings(DEBUG=False):
+                with self.assertRaises(CommandError):
+                    call_command("seed_dev_users", allow_production_demo=True)
 
     def test_seed_admin_mock_data_refuses_when_debug_false(self):
         from django.core.management import CommandError, call_command
