@@ -136,9 +136,9 @@ When `DATABASE_URL` is present, Django uses it in preference to
 against that PostgreSQL database. To use the Docker PostgreSQL database
 instead, unset `DATABASE_URL`/`DATABASE_URL_UNPOOLED` for the local process
 and start Docker first. The deployed Vercel frontend routes `/api/*` to the
-Render backend through `vercel.json`. If the frontend is deployed as a
-separate Render static site, configure the build environment variable
-`VITE_API_BASE_URL=https://doctrust-backend.onrender.com/api` instead.
+Render backend through `vercel.json`; keep browser API URLs relative and do not
+set `VITE_API_BASE_URL`, so CSRF and session cookies remain same-origin with
+the Vercel frontend.
 
 The web process uses pooled `DATABASE_URL`. For migrations or explicit
 administrative seed/verification work, set `DOCTRUST_USE_UNPOOLED_DATABASE=1`

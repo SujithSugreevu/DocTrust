@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:auth-config": "node scripts/validate_auth_proxy.mjs"
   },
   "dependencies": {
     "@neon/config": "^1.9.4",

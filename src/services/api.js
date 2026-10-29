@@ -1,19 +1,12 @@
 /**
- * Resolve API requests for both same-origin rewrites and separately hosted
- * frontends. Leave the value unset when Vercel's /api rewrite or Vite's local
- * proxy is configured; set VITE_API_BASE_URL to a direct backend /api URL for
- * a Render static frontend.
+ * Resolve every browser request through the current frontend origin.
+ *
+ * Vite proxies /api locally and Vercel rewrites /api to Render in production.
+ * Keeping the browser URL relative means CSRF and session cookies belong to
+ * the frontend origin instead of relying on JavaScript reading a Render-domain
+ * cookie or on a Vercel build-time API URL.
  */
-const configuredBase = String(import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '')
-const apiRoot = configuredBase
-  ? (configuredBase.endsWith('/api') ? configuredBase : `${configuredBase}/api`)
-  : ''
-
 export function apiUrl(path) {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
-  if (!apiRoot) return normalizedPath
-  const backendPath = normalizedPath.startsWith('/api')
-    ? normalizedPath.slice('/api'.length)
-    : normalizedPath
-  return `${apiRoot}${backendPath || '/'}`
+  return normalizedPath
 }
