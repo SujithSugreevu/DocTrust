@@ -11,3 +11,12 @@ services:
       --allow-ephemeral-demo-files; fi;
       exec gunicorn doctrust.wsgi:application --bind 0.0.0.0:$PORT'
     healthCheckPath: /api/health/
+    envVars:
+      # Explicit demo-only mode for this intentionally populated demo service.
+      # No secrets or database credentials are stored in this Blueprint.
+      - key: DOCTRUST_AUTO_SEED_DEMO_DATA
+        value: "1"
+      - key: DOCTRUST_DEMO_MODE
+        value: "1"
+      - key: DOCTRUST_DEMO_EPHEMERAL_FILES
+        value: "1"
