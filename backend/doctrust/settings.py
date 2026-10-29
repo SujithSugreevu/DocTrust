@@ -45,7 +45,9 @@ else:
 
 FRONTEND_BASE_URL = os.environ.get(
     "FRONTEND_BASE_URL",
-    "http://localhost:5173" if DEBUG else "",
+    "http://localhost:5173"
+    if DEBUG
+    else "https://doc-trust-one.vercel.app",
 ).strip().rstrip("/")
 if not DEBUG and not FRONTEND_BASE_URL:
     PRODUCTION_CONFIGURATION_ERRORS.append(
@@ -299,6 +301,15 @@ _default_dev_origins = [
     "http://127.0.0.1:5175",
 ] if DEBUG else []
 
+# The deployed frontend is a public origin, not a secret. Keep it in the
+# backend defaults so a missing Render environment variable cannot silently
+# remove the production origin from CORS/CSRF configuration. Additional
+# preview or custom frontend origins may still be supplied through the
+# environment variables below.
+_deployed_frontend_origins = [
+    "https://doc-trust-one.vercel.app",
+]
+
 _env_cors = [
     origin.strip()
     for origin in os.environ.get("DJANGO_CORS_ALLOWED_ORIGINS", "").split(",")
@@ -306,7 +317,9 @@ _env_cors = [
 ]
 if FRONTEND_BASE_URL:
     _env_cors.append(FRONTEND_BASE_URL)
-CORS_ALLOWED_ORIGINS = list(dict.fromkeys(_default_dev_origins + _env_cors))
+CORS_ALLOWED_ORIGINS = list(
+    dict.fromkeys(_default_dev_origins + _deployed_frontend_origins + _env_cors)
+)
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = (*default_headers, "x-doctrust-session")
@@ -319,16 +332,25 @@ _env_csrf = [
 ]
 if FRONTEND_BASE_URL:
     _env_csrf.append(FRONTEND_BASE_URL)
-CSRF_TRUSTED_ORIGINS = list(dict.fromkeys(_default_dev_origins + _env_csrf))
+CSRF_TRUSTED_ORIGINS = list(
+    dict.fromkeys(_default_dev_origins + _deployed_frontend_origins + _env_csrf)
+)
 
-CSRF_COOKIE_HTTPONLY = False  # React needs to read the CSRF cookie
-CSRF_COOKIE_SAMESITE = "Lax"
+# Keep the cookie readable for same-origin/local clients; cross-site clients
+# use the masked token returned by /api/auth/csrf/ rather than reading a
+# Render-domain cookie from JavaScript on the Vercel origin.
+CSRF_COOKIE_HTTPONLY = False
+# A Vercel frontend and Render API are different sites. SameSite=None is
+# required for direct cross-site cookie requests in production; Secure is
+# required by browsers whenever SameSite=None is used. Local development stays
+# on Lax because the Vite proxy/local origin does not need cross-site cookies.
+CSRF_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
 CSRF_COOKIE_NAME = "csrftoken"
 CSRF_COOKIE_SECURE = not DEBUG
 
 # ── Session ──────────────────────────────────────────────────────────
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
 SESSION_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_AGE = 86400  # 24 hours
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False

@@ -80,14 +80,24 @@ def invalidate_user_sessions(user):
 @method_decorator(ensure_csrf_cookie, name="dispatch")
 class CSRFView(APIView):
     """
-    Sets the CSRF cookie on the client and returns the token in the response payload.
+    Sets the CSRF cookie on the client and returns Django's masked token.
+
+    ``ensure_csrf_cookie`` makes Django emit ``Set-Cookie`` even when the
+    request has not otherwise rendered a template that uses a CSRF token.
+    ``get_token`` both primes that cookie and returns the masked value that a
+    browser client must send in ``X-CSRFToken`` on the login request.
     """
     permission_classes = [AllowAny]
     throttle_classes = []
 
     def get(self, request):
         csrf_token = get_token(request)
-        return Response({"csrfToken": csrf_token, "detail": "CSRF cookie set."})
+        response = Response(
+            {"csrfToken": csrf_token, "detail": "CSRF cookie set."}
+        )
+        # Do not let an intermediary cache a token-bearing response.
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class LoginView(APIView):

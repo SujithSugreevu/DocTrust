@@ -111,6 +111,14 @@ class AuthenticationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("csrfToken", response.data)
         self.assertTrue(bool(response.data["csrfToken"]))
+        cookie = response.cookies.get(settings.CSRF_COOKIE_NAME)
+        self.assertIsNotNone(cookie)
+        self.assertTrue(bool(cookie.value))
+        # Django returns a masked token in JSON; it must not expose the raw
+        # cookie secret as the header value.
+        self.assertNotEqual(response.data["csrfToken"], cookie.value)
+        self.assertEqual(cookie["samesite"], settings.CSRF_COOKIE_SAMESITE)
+        self.assertEqual(bool(cookie["secure"]), settings.CSRF_COOKIE_SECURE)
         self.assertIn("csrftoken", self.client.cookies)
         self.assertTrue(bool(self.client.cookies["csrftoken"].value))
 
@@ -974,6 +982,45 @@ class CsrfAndOriginSecurityTests(TestCase):
             HTTP_ORIGIN="http://localhost:5175",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_login_csrf_origin_checking_allows_deployed_vercel_frontend(self):
+        token = self._get_csrf_token()
+        response = self.client.post(
+            reverse("auth-login"),
+            {
+                "username": "csrf_test_user",
+                "password": self.password,
+                "expected_role": "ADMIN",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+            HTTP_ORIGIN="https://doc-trust-one.vercel.app",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get("tab_session_key"))
+
+    def test_deployed_frontend_cors_allows_credentials(self):
+        deployed_origin = "https://doc-trust-one.vercel.app"
+        self.assertIn(deployed_origin, settings.CORS_ALLOWED_ORIGINS)
+        self.assertIn(deployed_origin, settings.CSRF_TRUSTED_ORIGINS)
+        self.assertTrue(settings.CORS_ALLOW_CREDENTIALS)
+
+        response = self.client.options(
+            reverse("auth-login"),
+            HTTP_ORIGIN=deployed_origin,
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS="content-type,x-csrftoken",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Access-Control-Allow-Origin"], deployed_origin)
+        self.assertEqual(response["Access-Control-Allow-Credentials"], "true")
+
+    def test_cookie_policy_is_lax_locally_and_cross_site_in_production(self):
+        expected_samesite = "None" if not settings.DEBUG else "Lax"
+        self.assertEqual(settings.CSRF_COOKIE_SAMESITE, expected_samesite)
+        self.assertEqual(settings.SESSION_COOKIE_SAMESITE, expected_samesite)
+        self.assertEqual(settings.CSRF_COOKIE_SECURE, not settings.DEBUG)
+        self.assertEqual(settings.SESSION_COOKIE_SECURE, not settings.DEBUG)
 
     def test_login_csrf_origin_checking_rejects_untrusted_origin(self):
         token = self._get_csrf_token()
