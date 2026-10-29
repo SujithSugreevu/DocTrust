@@ -31,7 +31,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         ensure_demo_seed_allowed(options)
-        ensure_demo_storage_is_persistent()
+        ephemeral_demo_files = ensure_demo_storage_is_persistent(options)
 
         call_command(
             "seed_dev_users",
@@ -42,16 +42,26 @@ class Command(BaseCommand):
         call_command(
             "seed_admin_mock_data",
             allow_production_demo=options["allow_production_demo"],
+            allow_ephemeral_demo_files=options["allow_ephemeral_demo_files"],
         )
         call_command(
             "seed_employee_mock_data",
             allow_production_demo=options["allow_production_demo"],
+            allow_ephemeral_demo_files=options["allow_ephemeral_demo_files"],
         )
         call_command(
             "seed_demo_scale",
             allow_production_demo=options["allow_production_demo"],
+            allow_ephemeral_demo_files=options["allow_ephemeral_demo_files"],
         )
 
+        if ephemeral_demo_files:
+            self.stdout.write(
+                self.style.WARNING(
+                    "Ephemeral demo-file mode enabled: only fictional demo files may be "
+                    "regenerated; PostgreSQL records and real uploads are preserved."
+                )
+            )
         self.stdout.write(
             self.style.SUCCESS(
                 "DocTrust demonstration data seed completed. Existing records were preserved."

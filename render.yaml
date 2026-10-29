@@ -4,5 +4,10 @@ services:
     runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn doctrust.wsgi:application --bind 0.0.0.0:$PORT
+    startCommand: >-
+      sh -c 'if [ "$DOCTRUST_AUTO_SEED_DEMO_DATA" = "1" ] &&
+      [ "$DOCTRUST_DEMO_MODE" = "1" ]; then
+      python manage.py seed_demo_data --allow-production-demo
+      --allow-ephemeral-demo-files; fi;
+      exec gunicorn doctrust.wsgi:application --bind 0.0.0.0:$PORT'
     healthCheckPath: /api/health/

@@ -26,6 +26,7 @@ EMPLOYEE_DEMO_FOLDER_NAMES = (
     "People Operations", "Financial Planning", "Engineering Delivery",
     "Product Design", "Legal Contracts",
 )
+EXPECTED_DEMO_RECORD_COUNT = 557
 
 
 class Command(BaseCommand):
@@ -230,9 +231,15 @@ class Command(BaseCommand):
                 failures.append(f"... and {len(relationship_failures) - 20} more relationship errors")
 
         demo_record_count = sum(actual for _label, actual, _expected in checks)
-        self.stdout.write(f"Demo records counted: {demo_record_count} (target: approximately 500)")
-        if demo_record_count < 500:
-            failures.append(f"total coordinated demo records ({demo_record_count}/500)")
+        self.stdout.write(
+            f"Demo records counted: {demo_record_count} "
+            f"(target: {EXPECTED_DEMO_RECORD_COUNT})"
+        )
+        if demo_record_count < EXPECTED_DEMO_RECORD_COUNT:
+            failures.append(
+                f"total coordinated demo records "
+                f"({demo_record_count}/{EXPECTED_DEMO_RECORD_COUNT})"
+            )
 
         if failures:
             raise CommandError("Demo data verification failed: " + "; ".join(failures))

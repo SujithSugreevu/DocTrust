@@ -102,10 +102,12 @@ python backend/manage.py seed_demo_data --prompt-for-passwords
 python backend/manage.py verify_demo_data
 ```
 
-The command creates approximately 550 coordinated demo records across the
-existing models. It is idempotent and preserves existing records. It is
-intentionally not run automatically during web-service startup, so a restart
-cannot create or overwrite application data.
+The command creates 557 coordinated demo records across the existing models:
+2 primary accounts, 50 administrator-fixture records, 85 employee-fixture
+records, and 420 scale records. It writes 185 fictional demo document files;
+the database records remain in PostgreSQL. It is idempotent and preserves
+existing records. Automatic startup repair is disabled unless the explicit
+demo-only environment switches are enabled.
 
 To explicitly rotate both demo passwords locally, run:
 
@@ -126,10 +128,14 @@ python manage.py seed_demo_data --allow-production-demo --reset-passwords
 python manage.py verify_demo_data
 ```
 
-Remove the temporary password variables and `DOCTRUST_DEMO_MODE` immediately
-after the command succeeds. The command refuses to touch a `DEBUG=False`
-database without both explicit production flags and refuses to write demo
-document bytes to an unconfigured or `/tmp` storage root.
+Remove the temporary password variables after the command succeeds. A Render
+free-plan demo may additionally set `DOCTRUST_AUTO_SEED_DEMO_DATA=1`,
+`DOCTRUST_DEMO_MODE=1`, and `DOCTRUST_DEMO_EPHEMERAL_FILES=1`; the checked-in
+start command then runs the same idempotent seed/repair operation before
+Gunicorn on each restart. That mode regenerates only fictional demo files.
+Real uploads still require a persistent disk or private S3-compatible storage.
+The command refuses remote demo seeding unless both production flags and the
+ephemeral-file flag are explicit.
 
 When `DATABASE_URL` is present, Django uses it in preference to
 `POSTGRES_*`; local management commands and the Vite proxy therefore operate

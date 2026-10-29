@@ -170,7 +170,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         ensure_demo_seed_allowed(options)
-        ensure_demo_storage_is_persistent()
+        ensure_demo_storage_is_persistent(options)
 
         # These supporting fixture users are data owners for the admin demo,
         # not public login accounts.  They get an unusable password unless a

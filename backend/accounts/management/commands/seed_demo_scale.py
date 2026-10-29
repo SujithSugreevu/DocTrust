@@ -8,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounts.management.commands.demo_seed_support import (
+    add_demo_seed_arguments,
     ensure_demo_seed_allowed,
     ensure_demo_storage_is_persistent,
 )
@@ -67,15 +68,11 @@ class Command(BaseCommand):
     help = "Seed approximately 400 additional coordinated DocTrust demonstration records."
 
     def add_arguments(self, parser):
-        parser.add_argument(
-            "--allow-production-demo",
-            action="store_true",
-            help="Allow deliberate production demo seeding only when DOCTRUST_DEMO_MODE is enabled.",
-        )
+        add_demo_seed_arguments(parser)
 
     def handle(self, *args, **options):
         ensure_demo_seed_allowed(options)
-        ensure_demo_storage_is_persistent()
+        ensure_demo_storage_is_persistent(options)
 
         now = timezone.now()
         storage = PrivateDocumentStorage()

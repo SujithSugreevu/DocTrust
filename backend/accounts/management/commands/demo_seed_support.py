@@ -10,6 +10,7 @@ from django.core.management.base import CommandError
 
 
 DEMO_MODE_ENV = "DOCTRUST_DEMO_MODE"
+EPHEMERAL_DEMO_FILES_ENV = "DOCTRUST_DEMO_EPHEMERAL_FILES"
 
 
 def add_demo_seed_arguments(parser):
@@ -19,10 +20,27 @@ def add_demo_seed_arguments(parser):
         action="store_true",
         help="Allow deliberate production demo seeding only when DOCTRUST_DEMO_MODE is enabled.",
     )
+    parser.add_argument(
+        "--allow-ephemeral-demo-files",
+        action="store_true",
+        help=(
+            "Allow fictional demo files to be regenerated under an ephemeral storage root; "
+            "requires DOCTRUST_DEMO_EPHEMERAL_FILES=1 and the production demo guard."
+        ),
+    )
 
 
 def is_demo_mode_enabled():
     return str(os.environ.get(DEMO_MODE_ENV, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def is_ephemeral_demo_files_enabled():
+    return str(os.environ.get(EPHEMERAL_DEMO_FILES_ENV, "")).strip().lower() in {
         "1",
         "true",
         "yes",
@@ -66,18 +84,35 @@ def ensure_demo_seed_allowed(options):
         return
 
 
-def ensure_demo_storage_is_persistent():
-    """Prevent production demo files from being written to ephemeral /tmp."""
+def ensure_demo_storage_is_persistent(options=None):
+    """
+    Validate demo-file storage before a seed.
+
+    Real uploads must use persistent storage. A deliberately enabled demo-only
+    mode may use an ephemeral root because every seeded command repairs only
+    fictional demo files whose database records already identify them.
+    """
+    options = options or {}
     if settings.DEBUG and not is_remote_database_configured():
-        return
+        return False
 
     configured_root = os.environ.get("DOCUMENT_STORAGE_ROOT", "").strip()
     root = Path(getattr(settings, "DOCUMENT_STORAGE_ROOT", "")).resolve()
     normalized = root.as_posix().rstrip("/")
     if not configured_root or normalized in {"/tmp", "/var/tmp"} or normalized.startswith(("/tmp/", "/var/tmp/")):
+        ephemeral_demo_mode = (
+            bool(options.get("allow_production_demo"))
+            and bool(options.get("allow_ephemeral_demo_files"))
+            and is_demo_mode_enabled()
+            and is_ephemeral_demo_files_enabled()
+        )
+        if ephemeral_demo_mode:
+            return True
         raise CommandError(
-            "SECURITY GUARD: configure DOCUMENT_STORAGE_ROOT on persistent Render storage "
-            "before seeding demo documents (for example /var/data/doctrust/storage)."
+            "SECURITY GUARD: configure DOCUMENT_STORAGE_ROOT on persistent storage before "
+            "seeding document files. For fictional demo files only, explicitly enable "
+            "DOCTRUST_DEMO_MODE=1, DOCTRUST_DEMO_EPHEMERAL_FILES=1 and pass both "
+            "--allow-production-demo and --allow-ephemeral-demo-files."
         )
 
     try:
@@ -88,3 +123,4 @@ def ensure_demo_storage_is_persistent():
         ) from exc
     if not os.access(root, os.W_OK):
         raise CommandError("DOCUMENT_STORAGE_ROOT is not writable by the deployment runtime.")
+    return False
