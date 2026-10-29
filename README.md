@@ -71,6 +71,22 @@ npm run dev
 ```
 The React frontend is available at `http://localhost:5173`.
 
+### Render backend deployment
+
+The backend is Django; it is not a FastAPI/Uvicorn application. Configure the
+Render web service with:
+
+```text
+Root Directory: backend
+Build Command: pip install -r requirements.txt
+Start Command: gunicorn doctrust.wsgi:application --bind 0.0.0.0:$PORT
+Health Check Path: /api/health/
+```
+
+The same settings are checked into [render.yaml](./render.yaml). Do not use
+`uvicorn app.main:app`; this repository has no `app.main` module or FastAPI
+application.
+
 ### Demo account repair and database selection
 
 `seed_dev_users` is the supported command. It creates missing accounts, repairs
