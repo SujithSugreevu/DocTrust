@@ -39,16 +39,18 @@ The application is used by:
 
 The current stack is React, Vite, Tailwind CSS, Django 5.1, Django REST Framework, PostgreSQL through Psycopg 3, and Gunicorn. The frontend is deployed to Vercel and the Django backend is deployed to Render.
 
+**Live application:** [https://doc-trust-one.vercel.app/](https://doc-trust-one.vercel.app/)
+
 ## 2. Demo Login Credentials
 
 These are intentionally public demonstration credentials supplied for the DocTrust demo environment. Do not reuse them for real accounts, private business data, or any deployment that is not explicitly a demo service.
 
-| Role | Login ID / Username | Email | Password |
-|---|---|---|---|
-| Administrator | **admin_demo** | Username is recommended. The seed command canonical default is **admin_demo@doctrust.local**; an existing deployed email may be preserved instead. | **AdminDemo!2026** |
-| Employee | **employee_demo** | Username is recommended. The seed command canonical default is **employee_demo@doctrust.local**; an existing deployed email may be preserved instead. | **EmployeeDemo!2026** |
+| Role | Login ID / Username | Password |
+|---|---|---|
+| Administrator | **admin_demo** | **AdminDemo!2026** |
+| Employee | **employee_demo** | **EmployeeDemo!2026** |
 
-The login form accepts either username or email, but the usernames above are the stable demo identifiers. Select **Administrator** for admin_demo and **Employee** for employee_demo; the backend requires the submitted expected role to match the account database role.
+Use the usernames above to sign in. Select **Administrator** for admin_demo and **Employee** for employee_demo; the backend requires the submitted expected role to match the account database role.
 
 The passwords above are safe demo values explicitly designated for this project. The supported account command never stores them in source code and does not reset an existing password unless reset-passwords is explicitly requested. For a new deployment, set passwords through temporary environment variables or an interactive prompt instead of committing them.
 
@@ -584,7 +586,7 @@ The following are proposals, not completed features:
 DocTrust is a React/Vite and Django REST Framework document-management system with PostgreSQL persistence, role-based authorization, CSRF-protected per-tab sessions, private document storage, sharing permissions, audit history, and security monitoring.
 
 - **Repository:** [github.com/SujithSugreevu/DocTrust](https://github.com/SujithSugreevu/DocTrust)
-- **Frontend:** [doc-trust-one.vercel.app](https://doc-trust-one.vercel.app/)
+- **Live application:** [https://doc-trust-one.vercel.app/](https://doc-trust-one.vercel.app/)
 - **Backend:** [doctrust-backend.onrender.com](https://doctrust-backend.onrender.com/)
 - **Health endpoint:** [doctrust-backend.onrender.com/api/health/](https://doctrust-backend.onrender.com/api/health/)
 
