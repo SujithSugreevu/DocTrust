@@ -396,20 +396,6 @@ python backend\manage.py seed_demo_data --prompt-for-passwords
 python backend\manage.py verify_demo_data
 ~~~
 
-The orchestration command calls the supported account, administrator fixture, Employee fixture, and scale commands. It is idempotent: stable usernames, names, event markers, notification keys, shares, and alert types prevent duplicate demo records. Existing user passwords are preserved unless --reset-passwords is explicitly requested.
-
-The expected dataset is **557 coordinated demo records**:
-
-| Layer | Records |
-|---|---:|
-| Primary demo accounts | 2 |
-| Administrator fixture layer | 50 |
-| Employee fixture layer | 85 |
-| Scale layer | 420 |
-| **Total** | **557** |
-
-The dataset contains 185 fictional demo documents with generated PDF/DOCX/XLSX/PPTX bytes. The verifier checks 557 records, 185 files, owner/folder relationships, share recipients, audit targets, notification targets, alert targets, and storage-path containment. It does not modify data.
-
 ### Production/demo Render mode
 
 This repository is configured for an intentionally populated demo service. The [render.yaml](./render.yaml) startup command runs the seed only when all of the following are enabled:
