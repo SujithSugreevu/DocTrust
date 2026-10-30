@@ -3,6 +3,7 @@ services:
     name: doctrust-backend
     runtime: python
     rootDir: backend
+    autoDeployTrigger: commit
     buildCommand: pip install -r requirements.txt
     startCommand: >-
       sh -c 'if [ "$DOCTRUST_AUTO_SEED_DEMO_DATA" = "1" ] &&

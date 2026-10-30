@@ -468,6 +468,7 @@ The Blueprint in [render.yaml](./render.yaml) uses:
 
 ~~~text
 Root Directory: backend
+Auto-deploy: every commit
 Build Command: pip install -r requirements.txt
 Start Command: the guarded demo-seed shell command followed by Gunicorn
 Health Check: /api/health/
@@ -481,7 +482,9 @@ gunicorn doctrust.wsgi:application --bind 0.0.0.0:$PORT
 
 Required production configuration includes DJANGO_DEBUG=False, a strong DJANGO_SECRET_KEY, DJANGO_ALLOWED_HOSTS=doctrust-backend.onrender.com, the pooled DATABASE_URL, and the exact Vercel CORS/CSRF origins. Do not use uvicorn app.main:app; this repository has no FastAPI application.
 
-The deployed backend is https://doctrust-backend.onrender.com/ and its health response reports PostgreSQL connectivity. The Blueprint configures the explicit demo startup flags. If the Render service is not managed by the Blueprint, set the three flags and the guarded start command manually in the Render dashboard, then deploy the latest commit. The live service must be checked separately after deployment.
+The deployed backend is https://doctrust-backend.onrender.com/ and its health response reports PostgreSQL connectivity. The Blueprint configures the explicit demo startup flags and deploys each commit. If the Render service is not managed by the Blueprint, enable automatic deploys from the connected branch in the Render dashboard, set the three flags and the guarded start command manually, then deploy the latest commit. After each deploy, confirm `/api/health/` returns HTTP 200 before relying on login.
+
+Automatic deploys and health checks prevent stale or unhealthy code from being treated as ready, but cannot recover a deleted, suspended, or un-deployed Render service. If Render reports `X-Render-Routing: no-deploy`, restore or deploy the service in Render; source-code changes alone cannot bring back a service that has no active deployment. A free Render instance can also spin down, so choose an always-on plan if uninterrupted availability is required.
 
 ### Storage deployment choice
 
